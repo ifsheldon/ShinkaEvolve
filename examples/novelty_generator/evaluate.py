@@ -17,7 +17,8 @@ def evaluate_with_lm_judge(
     program_path: str,
     results_dir: str,
     lm_input_and_output_processors: Callable | Tuple[Callable, Callable] = (
-        make_lm_input_and_output_processors),
+        make_lm_input_and_output_processors
+    ),
     llm_judge_names=[
         "azure-gpt-4.1",
         "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -29,13 +30,12 @@ def evaluate_with_lm_judge(
         reasoning_efforts="low",
         model_sample_probs=None,
         output_model=None,
-        verbose=True
+        verbose=True,
     ),
     limit_max_characters: Optional[int] = None,
     num_samples: int = 20,
     seed: int = 42,
 ):
-
     spec = importlib.util.spec_from_file_location("program", program_path)
     if spec is None:
         print(f"Error: Could not load spec for module at {program_path}")
@@ -59,26 +59,28 @@ def evaluate_with_lm_judge(
         get_evaluation_prompt, extract_results = lm_input_and_output_processors
     else:
         get_evaluation_prompt, extract_results = lm_input_and_output_processors(
-            number_of_samples=num_samples)
+            number_of_samples=num_samples
+        )
     try:
         start_t = time.time()
         novel_outputs = module.run_experiment(random_ints)
         if limit_max_characters is not None:
-            novel_outputs = [
-                output[:limit_max_characters] for output in novel_outputs]
+            novel_outputs = [output[:limit_max_characters] for output in novel_outputs]
 
         if not isinstance(llm_judge_names, list):
             llm_judge_names = [llm_judge_names]
         if not isinstance(llm_judge_kwargs, list):
             llm_judge_kwargs = [llm_judge_kwargs] * len(llm_judge_names)
 
-        llm_judges = [LLMClient(
-            model_names=llm_judge_names[i],
-            **llm_judge_kwargs[i],
-        ) for i in range(len(llm_judge_names))]
+        llm_judges = [
+            LLMClient(
+                model_names=llm_judge_names[i],
+                **llm_judge_kwargs[i],
+            )
+            for i in range(len(llm_judge_names))
+        ]
 
-        lm_judge_sys_prompt, lm_judge_message = get_evaluation_prompt(
-            novel_outputs)
+        lm_judge_sys_prompt, lm_judge_message = get_evaluation_prompt(novel_outputs)
 
         results_dict = {}
         all_final_scores = []
@@ -102,20 +104,19 @@ def evaluate_with_lm_judge(
 
             total_cost += total_costs
             for k, v in llm_judge_scores.items():
-                results_dict['judge{}_{}'.format(llm_judge_idx + 1, k)] = v
-            all_final_scores.append(llm_judge_scores.get(
-                'final_novelty_score', 0.0))
+                results_dict["judge{}_{}".format(llm_judge_idx + 1, k)] = v
+            all_final_scores.append(llm_judge_scores.get("final_novelty_score", 0.0))
 
-        results_dict['combined_score'] = float(np.mean(all_final_scores))
+        results_dict["combined_score"] = float(np.mean(all_final_scores))
 
-        if results_dict['combined_score'] is None:
-            results_dict['combined_score'] = 0.0
+        if results_dict["combined_score"] is None:
+            results_dict["combined_score"] = 0.0
 
         metrics = {}
         metrics["runtime"] = time.time() - start_t
         metrics["public"] = results_dict
         metrics["private"] = {"evaluation_cost": total_cost}
-        metrics["combined_score"] = results_dict['combined_score']
+        metrics["combined_score"] = results_dict["combined_score"]
         error = ""
         correct = True
     except Exception as e:

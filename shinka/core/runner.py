@@ -158,9 +158,7 @@ class EvolutionRunner:
 
         # Initialize database and scheduler
         db_config.db_path = str(db_path)
-        embedding_model_to_use = (
-            evo_config.embedding_model or "text-embedding-3-small"
-        )
+        embedding_model_to_use = evo_config.embedding_model or "text-embedding-3-small"
         self.db = ProgramDatabase(
             config=db_config, embedding_model=embedding_model_to_use
         )

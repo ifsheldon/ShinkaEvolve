@@ -37,6 +37,7 @@ GEMINI_EMBEDDING_COSTS = {
     "gemini-embedding-001": 0.0 / M,  # Check current pricing
 }
 
+
 def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
     if model_name in OPENAI_EMBEDDING_MODELS:
         client = openai.OpenAI()
@@ -53,7 +54,9 @@ def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
         # Configure Gemini API
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set for Gemini models")
+            raise ValueError(
+                "GEMINI_API_KEY environment variable not set for Gemini models"
+            )
         genai.configure(api_key=api_key)
         client = "gemini"  # Use string identifier for Gemini
         model_to_use = model_name
@@ -101,18 +104,18 @@ class EmbeddingClient:
             try:
                 embeddings = []
                 total_tokens = 0
-                
+
                 for text in code:
                     result = genai.embed_content(
                         model=f"models/{self.model}",
                         content=text,
-                        task_type="retrieval_document"
+                        task_type="retrieval_document",
                     )
-                    embeddings.append(result['embedding'])
+                    embeddings.append(result["embedding"])
                     total_tokens += len(text.split())
-                
+
                 cost = total_tokens * GEMINI_EMBEDDING_COSTS.get(self.model, 0.0)
-                
+
                 if single_code:
                     return embeddings[0] if embeddings else [], cost
                 else:
