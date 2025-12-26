@@ -2,6 +2,13 @@
 from shinka.core import EvolutionRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+assert os.getenv("GEMINI_API_KEY"), "GEMINI_API_KEY is not set"
+assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY is not set"
 
 job_config = LocalJobConfig(eval_program_path="evaluate.py")
 
@@ -61,19 +68,20 @@ evo_config = EvolutionConfig(
     job_type="local",
     language="python",
     llm_models=[
-        "gemini-2.5-pro",
-        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
-        "azure-o4-mini",
+        "gemini-3-pro-preview",
+        "gpt-5.2",
+        "gemini-3-flash-preview",
+        "gpt-5-mini",
     ],
     llm_kwargs=dict(temperatures=[0.0, 0.5, 1.0], max_tokens=16384),
     meta_rec_interval=10,
-    meta_llm_models=["azure-gpt-4.1"],
+    meta_llm_models=["gemini-3-pro-preview"],
     meta_llm_kwargs=dict(temperatures=[0.0]),
     embedding_model="text-embedding-3-small",
     init_program_path="initial.py",
     max_novelty_attempts=3,
     code_embed_sim_threshold=0.95,
-    novelty_llm_models=["azure-gpt-4.1"],
+    novelty_llm_models=["gpt-5.2"],
     novelty_llm_kwargs=dict(temperatures=[0.0]),
     use_text_feedback=True,
 )
