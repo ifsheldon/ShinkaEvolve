@@ -115,11 +115,11 @@ class EvolutionRunner:
             # Set up logging with both console and file handlers
             logging.basicConfig(
                 level=logging.INFO,
-                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                format="%(asctime)s - %(name)s:%(funcName)s:%(lineno)d - %(levelname)s - %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
                 handlers=[
                     RichHandler(
-                        show_time=False, show_level=False, show_path=False
+                        show_time=False, show_level=False, show_path=True
                     ),  # Console output (clean)
                     logging.FileHandler(
                         log_filename, mode="a", encoding="utf-8"
