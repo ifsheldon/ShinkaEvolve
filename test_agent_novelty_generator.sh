@@ -1,0 +1,1 @@
+uv run python examples/novelty_generator/run_evo.py 

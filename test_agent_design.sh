@@ -1,0 +1,1 @@
+uv run python examples/adas_aime/run_evo.py
