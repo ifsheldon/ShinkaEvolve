@@ -12,7 +12,8 @@ evo_config:
   llm_models:
     - "gemini-3-flash-preview"
   llm_kwargs:
-    max_tokens: 16384
+    max_tokens: 32768
+    reasoning_efforts: "dynamic"
   llm_dynamic_selection: null
   embedding_model: "text-embedding-3-small"
   results_dir: ${output_dir}
