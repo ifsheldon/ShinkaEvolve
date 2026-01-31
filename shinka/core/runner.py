@@ -31,6 +31,7 @@ from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.logo import print_gradient_logo
+from shinka.interactive import InteractiveController, InteractiveSelection
 
 FOLDER_PREFIX = "gen"
 
@@ -62,6 +63,10 @@ class EvolutionConfig:
     novelty_llm_models: Optional[List[str]] = None
     novelty_llm_kwargs: dict = field(default_factory=lambda: {})
     use_text_feedback: bool = False
+    interactive_mode: bool = False
+    interactive_parent: bool = False
+    interactive_patch_type: bool = False
+    interactive_inspirations: bool = False
 
 
 @dataclass
@@ -99,6 +104,15 @@ class EvolutionRunner:
         self.job_config = job_config
         self.db_config = db_config
         self.verbose = verbose
+        self.interactive_controller: Optional[InteractiveController] = None
+
+        if self.evo_config.interactive_mode:
+            self.interactive_controller = InteractiveController()
+            if self.evo_config.max_parallel_jobs != 1:
+                logger.info(
+                    "Interactive mode enabled; forcing max_parallel_jobs=1."
+                )
+            self.evo_config.max_parallel_jobs = 1
 
         print_gradient_logo((255, 0, 0), (255, 255, 255))
         if evo_config.results_dir is None:
@@ -615,6 +629,34 @@ class EvolutionRunner:
 
         self.completed_generations = completed_up_to
 
+    def _get_interactive_selection(
+        self, generation: int
+    ) -> Optional[InteractiveSelection]:
+        """Return user selection for interactive evolution, if enabled."""
+        if not self.evo_config.interactive_mode or not self.interactive_controller:
+            return None
+
+        selection = self.interactive_controller.prompt_selection(
+            db=self.db,
+            generation=generation,
+            allowed_patch_types=self.evo_config.patch_types,
+        )
+
+        if not self.evo_config.interactive_parent:
+            selection.use_auto_parent = True
+            selection.parent_id = None
+
+        if not self.evo_config.interactive_patch_type:
+            selection.use_auto_patch_type = True
+            selection.patch_type = None
+
+        if not self.evo_config.interactive_inspirations:
+            selection.use_auto_inspirations = True
+            selection.archive_inspiration_ids = []
+            selection.top_k_inspiration_ids = []
+
+        return selection
+
     def _submit_new_job(self):
         """Submit a new job to the queue."""
         current_gen = self.next_generation_to_submit
@@ -646,21 +688,71 @@ class EvolutionRunner:
             embed_cost = 0
             novelty_cost = 0.0
             novelty_checks_performed = 0
+            selection = self._get_interactive_selection(current_gen)
+            patch_type_override = None
+            user_suggestions = None
+            if selection and not selection.use_auto_patch_type:
+                patch_type_override = selection.patch_type
+            if selection and selection.user_suggestions:
+                user_suggestions = selection.user_suggestions
+
+            num_archive_insp = (
+                self.db_config.num_archive_inspirations
+                if hasattr(self.db_config, "num_archive_inspirations")
+                else 5
+            )
+            num_top_k_insp = (
+                self.db_config.num_top_k_inspirations
+                if hasattr(self.db_config, "num_top_k_inspirations")
+                else 2
+            )
             # Loop over novelty attempts
             for nov_attempt in range(self.evo_config.max_novelty_attempts):
                 # Loop over patch resamples - including parents
                 for resample in range(self.evo_config.max_patch_resamples):
-                    (
-                        parent_program,
-                        archive_programs,
-                        top_k_programs,
-                    ) = self.db.sample(
-                        target_generation=current_gen,
-                        novelty_attempt=nov_attempt + 1,
-                        max_novelty_attempts=self.evo_config.max_novelty_attempts,
-                        resample_attempt=resample + 1,
-                        max_resample_attempts=self.evo_config.max_patch_resamples,
-                    )
+                    if selection and not selection.use_auto_parent:
+                        parent_program = self.db.get(selection.parent_id)
+                        if not parent_program:
+                            raise RuntimeError(
+                                "Interactive parent selection failed: "
+                                f"{selection.parent_id} not found"
+                            )
+
+                        if selection.use_auto_inspirations:
+                            (
+                                archive_programs,
+                                top_k_programs,
+                            ) = self.db.sample_inspirations_for_parent(
+                                parent_program,
+                                num_archive_insp,
+                                num_top_k_insp,
+                            )
+                        else:
+                            archive_programs = self.db.get_programs_by_ids(
+                                selection.archive_inspiration_ids
+                            )
+                            top_k_programs = self.db.get_programs_by_ids(
+                                selection.top_k_inspiration_ids
+                            )
+                    else:
+                        (
+                            parent_program,
+                            archive_programs,
+                            top_k_programs,
+                        ) = self.db.sample(
+                            target_generation=current_gen,
+                            novelty_attempt=nov_attempt + 1,
+                            max_novelty_attempts=self.evo_config.max_novelty_attempts,
+                            resample_attempt=resample + 1,
+                            max_resample_attempts=self.evo_config.max_patch_resamples,
+                        )
+                        if selection and not selection.use_auto_inspirations:
+                            archive_programs = self.db.get_programs_by_ids(
+                                selection.archive_inspiration_ids
+                            )
+                            top_k_programs = self.db.get_programs_by_ids(
+                                selection.top_k_inspiration_ids
+                            )
                     archive_insp_ids = [p.id for p in archive_programs]
                     top_k_insp_ids = [p.id for p in top_k_programs]
                     parent_id = parent_program.id
@@ -672,6 +764,8 @@ class EvolutionRunner:
                         current_gen,
                         novelty_attempt=nov_attempt + 1,
                         resample_attempt=resample + 1,
+                        patch_type_override=patch_type_override,
+                        user_suggestions=user_suggestions,
                     )
                     api_costs += meta_patch_data["api_costs"]
                     if (
@@ -963,6 +1057,8 @@ class EvolutionRunner:
         generation: int,
         novelty_attempt: int = 1,
         resample_attempt: int = 1,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> tuple[Optional[str], dict, int]:
         """Run patch generation for a specific generation."""
         max_patch_attempts = self.evo_config.max_patch_attempts
@@ -979,6 +1075,8 @@ class EvolutionRunner:
             archive_inspirations=archive_programs,
             top_k_inspirations=top_k_programs,
             meta_recommendations=meta_recs,
+            patch_type_override=patch_type_override,
+            user_suggestions=user_suggestions,
         )
 
         if patch_type in ["full", "cross"]:
@@ -1008,6 +1106,9 @@ class EvolutionRunner:
         patch_txt_attempt = None
         patch_path = None
         diff_summary = {}
+        meta_patch_data = {}
+        if user_suggestions:
+            meta_patch_data["user_suggestions"] = user_suggestions
 
         for patch_attempt in range(max_patch_attempts):
             response = self.llm.query(

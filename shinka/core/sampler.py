@@ -68,6 +68,8 @@ class PromptSampler:
         archive_inspirations: List[Program],
         top_k_inspirations: List[Program],
         meta_recommendations: Optional[str] = None,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> Tuple[str, str, str]:
         if self.task_sys_msg is None:
             sys_msg = BASE_SYSTEM_MSG
@@ -76,7 +78,11 @@ class PromptSampler:
 
         # Sample coding type
         # Filter out crossover if no inspirations
-        if len(archive_inspirations) == 0 and len(top_k_inspirations) == 0:
+        if patch_type_override and patch_type_override != "auto":
+            if patch_type_override not in ["diff", "full", "cross"]:
+                raise ValueError(f"Invalid patch type override: {patch_type_override}")
+            patch_type = patch_type_override
+        elif len(archive_inspirations) == 0 and len(top_k_inspirations) == 0:
             valid_types = [t for t in self.patch_types if t != "cross"]
             valid_probs = [
                 p
@@ -125,6 +131,14 @@ class PromptSampler:
         if self.use_text_feedback:
             text_feedback_section = "\n" + format_text_feedback_section(
                 parent.text_feedback
+            )
+
+        suggestions_section = ""
+        if user_suggestions:
+            suggestions_section = (
+                "\n\n# User Suggestions\n"
+                "The user provided the following guidance for this edit:\n\n"
+                f"{user_suggestions.strip()}\n"
             )
 
         if patch_type == "diff":
@@ -176,6 +190,6 @@ class PromptSampler:
 
         return (
             sys_msg + sum_rec_msg,
-            eval_history_msg + "\n" + iter_msg,
+            eval_history_msg + "\n" + iter_msg + suggestions_section,
             patch_type,
         )
