@@ -813,6 +813,56 @@ class ProgramDatabase:
         return self._program_from_row(row)
 
     @db_retry()
+    def get_programs_by_ids(self, program_ids: List[str]) -> List[Program]:
+        """Resolve multiple program IDs into Program objects.
+
+        Args:
+            program_ids: Program IDs to resolve.
+
+        Returns:
+            List of Program objects in input order, skipping missing IDs.
+        """
+        if not program_ids:
+            return []
+        programs: List[Program] = []
+        for pid in program_ids:
+            p = self.get(pid)
+            if p is not None:
+                programs.append(p)
+        return programs
+
+    def sample_inspirations_for_parent(
+        self,
+        parent: Program,
+        num_archive_insp: int,
+        num_top_k_insp: int,
+    ) -> Tuple[List[Program], List[Program]]:
+        """Sample inspirations for a specific parent program.
+
+        Used by interactive actions (suggest/merge) where the parent is
+        chosen by the expert rather than by the sampling strategy.
+        """
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        context_selector = CombinedContextSelector(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            get_program_func=self.get,
+            best_program_id=self.best_program_id,
+            get_island_idx_func=(
+                self.island_manager.get_island_idx
+                if self.island_manager
+                else None
+            ),
+            program_from_row_func=self._program_from_row,
+        )
+        return context_selector.sample_context(
+            parent, num_archive_insp, num_top_k_insp
+        )
+
+    @db_retry()
     def sample(
         self,
         target_generation=None,

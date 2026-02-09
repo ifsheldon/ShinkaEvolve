@@ -31,6 +31,7 @@ from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.logo import print_gradient_logo
+from shinka.interactive import WebController
 
 FOLDER_PREFIX = "gen"
 
@@ -62,6 +63,7 @@ class EvolutionConfig:
     novelty_llm_models: Optional[List[str]] = None
     novelty_llm_kwargs: dict = field(default_factory=lambda: {})
     use_text_feedback: bool = False
+    interactive_mode: bool = False
 
 
 @dataclass
@@ -162,6 +164,13 @@ class EvolutionRunner:
         self.db = ProgramDatabase(
             config=db_config, embedding_model=embedding_model_to_use
         )
+
+        # Initialize Interactive web controller if enabled
+        self.web_controller: Optional[WebController] = None
+        if self.evo_config.interactive_mode:
+            self.web_controller = WebController(db_path=str(db_path))
+            logger.info("Interactive web controller enabled")
+
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type,
             config=job_config,  # type: ignore
@@ -318,6 +327,34 @@ class EvolutionRunner:
             while (
                 self.completed_generations < target_gens or len(self.running_jobs) > 0
             ):
+                # --- Interactive: process commands and update status ---
+                if self.web_controller is not None:
+                    interactive_actions = self.web_controller.process_commands(self.db)
+                    for action in interactive_actions:
+                        self._handle_interactive_action(action)
+
+                    # Check for stop request
+                    if self.web_controller.stop_requested:
+                        logger.info("Interactive: stop requested, finishing in-flight jobs…")
+                        # Drain running jobs
+                        while self.running_jobs:
+                            completed_jobs = self._check_completed_jobs()
+                            for job in completed_jobs:
+                                self._process_completed_job(job)
+                            if self.running_jobs:
+                                time.sleep(1)
+                        self._update_completed_generations()
+                        break
+
+                    # Update Interactive status
+                    best = self.db.get_best_program()
+                    self.web_controller.write_status(
+                        generation=self.completed_generations,
+                        best_score=best.combined_score if best and best.combined_score else 0.0,
+                        queued_jobs=len(self.running_jobs),
+                        total_programs=self.db.program_count if hasattr(self.db, 'program_count') else 0,
+                    )
+
                 # Check for completed jobs
                 completed_jobs = self._check_completed_jobs()
 
@@ -340,6 +377,11 @@ class EvolutionRunner:
                 if self.completed_generations >= target_gens:
                     logger.info("All generations completed, exiting...")
                     break
+
+                # --- Interactive: skip job submission while paused ---
+                if self.web_controller is not None and self.web_controller.is_paused:
+                    time.sleep(1)
+                    continue
 
                 # Submit new jobs to fill the queue (only if we have capacity)
                 if (
@@ -366,6 +408,27 @@ class EvolutionRunner:
         end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"Evolution run ended at {end_time}")
         logger.info("=" * 80)
+
+        # --- Interactive: keep-alive loop after evolution completes ---
+        # If Interactive mode is active and the run was NOT explicitly stopped,
+        # enter a keep-alive loop so a human expert can continue to
+        # submit suggestions and merge requests after automated
+        # generations finish.
+        if self.web_controller is not None and not self.web_controller.stop_requested:
+            self.web_controller.mark_idle()
+            logger.info(
+                "Interactive: evolution generations done — entering keep-alive mode. "
+                "Submit suggestions / merges from the UI, or press Ctrl-C / "
+                "send a stop command to exit."
+            )
+            try:
+                self._interactive_keepalive_loop()
+            except KeyboardInterrupt:
+                logger.info("Interactive: keyboard interrupt, exiting keep-alive mode.")
+
+        # Mark Interactive run as completed (final)
+        if self.web_controller is not None:
+            self.web_controller.mark_completed()
 
     def generate_initial_program(self):
         """Generate initial program with LLM, with retries."""
@@ -614,6 +677,150 @@ class EvolutionRunner:
                 return
 
         self.completed_generations = completed_up_to
+
+    # ------------------------------------------------------------------
+    # Interactive keep-alive loop (post-evolution)
+    # ------------------------------------------------------------------
+
+    def _interactive_keepalive_loop(self) -> None:
+        """Block and keep processing interactive commands after evolution ends.
+
+        The loop only exits when the user sends a ``stop`` command or
+        presses Ctrl-C (KeyboardInterrupt caught by the caller).
+        """
+        while True:
+            # Process any pending commands
+            interactive_actions = self.web_controller.process_commands(self.db)
+            for action in interactive_actions:
+                self._handle_interactive_action(action)
+
+            if self.web_controller.stop_requested:
+                logger.info("Interactive keep-alive: stop requested, draining jobs…")
+                while self.running_jobs:
+                    completed_jobs = self._check_completed_jobs()
+                    for job in completed_jobs:
+                        self._process_completed_job(job)
+                    if self.running_jobs:
+                        time.sleep(1)
+                break
+
+            # Check for completed Interactive-spawned jobs
+            completed_jobs = self._check_completed_jobs()
+            for job in completed_jobs:
+                self._process_completed_job(job)
+
+            # Update status (idle=True when no Interactive jobs are running)
+            best = self.db.get_best_program()
+            self.web_controller.write_status(
+                generation=self.completed_generations,
+                best_score=best.combined_score if best and best.combined_score else 0.0,
+                queued_jobs=len(self.running_jobs),
+                total_programs=self.db.program_count if hasattr(self.db, 'program_count') else 0,
+                idle=len(self.running_jobs) == 0,
+            )
+
+            time.sleep(2)
+
+    # ------------------------------------------------------------------
+    # Interactive action handling
+    # ------------------------------------------------------------------
+
+    def _handle_interactive_action(self, action: dict) -> None:
+        """Process a single interactive action (suggest or merge).
+
+        This creates a new generation using the expert's guidance,
+        analogous to ``_submit_new_job`` but with overridden parents
+        and an expert prompt injected into the LLM request.
+        """
+        action_type = action["action"]
+        prompt = action.get("prompt", "")
+        patch_type_override = action.get("patch_type", "full")
+
+        if action_type == "suggest":
+            parent_id = action["parent_id"]
+            parent_program = self.db.get(parent_id)
+            if parent_program is None:
+                logger.error("Interactive suggest: parent %s not found", parent_id)
+                return
+
+            # Sample inspirations for this parent
+            archive_programs, top_k_programs = (
+                self.db.sample_inspirations_for_parent(
+                    parent_program,
+                    self.db_config.num_archive_inspirations,
+                    self.db_config.num_top_k_inspirations,
+                )
+            )
+
+        elif action_type == "merge":
+            parent_ids = action["parent_ids"]
+            parent_program = self.db.get(parent_ids[0])
+            if parent_program is None:
+                logger.error("Interactive merge: primary parent %s not found", parent_ids[0])
+                return
+            # Remaining parents become the archive inspirations
+            archive_programs = self.db.get_programs_by_ids(parent_ids[1:])
+            top_k_programs = []
+            patch_type_override = "cross"
+        else:
+            logger.warning("Unknown Interactive action: %s", action_type)
+            return
+
+        # Allocate a generation slot
+        current_gen = self.next_generation_to_submit
+        self.next_generation_to_submit += 1
+
+        exec_fname = (
+            f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/main.{self.lang_ext}"
+        )
+        results_dir = f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/results"
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+
+        # Run the patch with expert guidance
+        code_diff, meta_patch_data, num_applied_attempt = self.run_patch(
+            parent_program,
+            archive_programs,
+            top_k_programs,
+            current_gen,
+            patch_type_override=patch_type_override,
+            user_suggestions=prompt,
+        )
+
+        # Tag with Interactive metadata
+        meta_patch_data["source"] = f"human_{action_type}"
+        if prompt:
+            meta_patch_data["human_prompt"] = prompt
+
+        # Get embedding
+        code_embedding, embed_cost = self.get_code_embedding(exec_fname)
+
+        # Submit for evaluation
+        job_id = self.scheduler.submit_async(exec_fname, results_dir)
+
+        parent_id = parent_program.id
+        archive_insp_ids = [p.id for p in archive_programs]
+        top_k_insp_ids = [p.id for p in top_k_programs]
+
+        running_job = RunningJob(
+            job_id=job_id,
+            exec_fname=exec_fname,
+            results_dir=results_dir,
+            start_time=time.time(),
+            generation=current_gen,
+            parent_id=parent_id,
+            archive_insp_ids=archive_insp_ids,
+            top_k_insp_ids=top_k_insp_ids,
+            code_diff=code_diff,
+            meta_patch_data=meta_patch_data,
+            code_embedding=code_embedding,
+            embed_cost=embed_cost,
+            novelty_cost=0.0,
+        )
+        self.running_jobs.append(running_job)
+        logger.info(
+            "Interactive %s: submitted generation %d (parent=%s)",
+            action_type, current_gen, parent_id,
+        )
 
     def _submit_new_job(self):
         """Submit a new job to the queue."""
@@ -963,6 +1170,8 @@ class EvolutionRunner:
         generation: int,
         novelty_attempt: int = 1,
         resample_attempt: int = 1,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> tuple[Optional[str], dict, int]:
         """Run patch generation for a specific generation."""
         max_patch_attempts = self.evo_config.max_patch_attempts
@@ -979,6 +1188,8 @@ class EvolutionRunner:
             archive_inspirations=archive_programs,
             top_k_inspirations=top_k_programs,
             meta_recommendations=meta_recs,
+            patch_type_override=patch_type_override,
+            user_suggestions=user_suggestions,
         )
 
         if patch_type in ["full", "cross"]:

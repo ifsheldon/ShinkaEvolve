@@ -68,6 +68,8 @@ class PromptSampler:
         archive_inspirations: List[Program],
         top_k_inspirations: List[Program],
         meta_recommendations: Optional[str] = None,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> Tuple[str, str, str]:
         if self.task_sys_msg is None:
             sys_msg = BASE_SYSTEM_MSG
@@ -75,8 +77,13 @@ class PromptSampler:
             sys_msg = self.task_sys_msg
 
         # Sample coding type
+        # Allow override from interactive commands
+        if patch_type_override and patch_type_override not in ("auto", ""):
+            if patch_type_override not in ("diff", "full", "cross"):
+                raise ValueError(f"Invalid patch type override: {patch_type_override}")
+            patch_type = patch_type_override
         # Filter out crossover if no inspirations
-        if len(archive_inspirations) == 0 and len(top_k_inspirations) == 0:
+        elif len(archive_inspirations) == 0 and len(top_k_inspirations) == 0:
             valid_types = [t for t in self.patch_types if t != "cross"]
             valid_probs = [
                 p
@@ -174,8 +181,19 @@ class PromptSampler:
             )
             sum_rec_msg += f"\n{meta_recommendations}"
 
+        # Add expert guidance from interactive suggestions if provided
+        suggestions_section = ""
+        if user_suggestions:
+            suggestions_section = (
+                "\n\n# Expert Guidance\n"
+                "A human expert has reviewed the current program and "
+                "provided the following guidance. You MUST follow this "
+                "guidance while still producing a valid, working program.\n\n"
+                f"{user_suggestions.strip()}\n"
+            )
+
         return (
             sys_msg + sum_rec_msg,
-            eval_history_msg + "\n" + iter_msg,
+            eval_history_msg + "\n" + iter_msg + suggestions_section,
             patch_type,
         )
