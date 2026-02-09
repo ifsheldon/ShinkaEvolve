@@ -39,6 +39,7 @@ class WebController:
         self.interactive_db = InteractiveDatabase(db_path)
         self._paused = False
         self._stop_requested = False
+        self._continue_requested = False
 
     # ------------------------------------------------------------------
     # Public API used by EvolutionRunner
@@ -51,6 +52,14 @@ class WebController:
     @property
     def stop_requested(self) -> bool:
         return self._stop_requested
+
+    @property
+    def continue_requested(self) -> bool:
+        return self._continue_requested
+
+    def clear_continue(self) -> None:
+        """Reset the continue flag after a job has been submitted."""
+        self._continue_requested = False
 
     def process_commands(
         self,
@@ -99,9 +108,12 @@ class WebController:
         total_programs: int,
         *,
         idle: bool = False,
+        waiting: bool = False,
     ) -> None:
         """Persist current run status so the web backend can read it."""
-        if idle:
+        if waiting:
+            state = RunState.WAITING
+        elif idle:
             state = RunState.IDLE
         elif self._paused:
             state = RunState.PAUSED
@@ -153,6 +165,11 @@ class WebController:
         if ct == CommandType.STOP.value:
             logger.info("Interactive: stop requested")
             self._stop_requested = True
+            return None
+
+        if ct == CommandType.CONTINUE.value:
+            logger.info("Interactive: continue requested")
+            self._continue_requested = True
             return None
 
         if ct == CommandType.SUGGEST.value:

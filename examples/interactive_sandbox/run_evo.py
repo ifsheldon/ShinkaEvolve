@@ -69,7 +69,9 @@ def _mock_query(
     print(f"\n{sep}")
     print(f"  MOCK LLM — call #{_CALL_COUNTER}")
     print(sep)
-    print(f"[SYSTEM MESSAGE]\n{textwrap.shorten(system_msg, width=600, placeholder=' ...')}")
+    print(
+        f"[SYSTEM MESSAGE]\n{textwrap.shorten(system_msg, width=600, placeholder=' ...')}"
+    )
     print(f"\n[USER MESSAGE]\n{textwrap.shorten(msg, width=1200, placeholder=' ...')}")
     print(sep)
 
@@ -121,6 +123,7 @@ def _mock_query(
 from shinka.llm.llm import LLMClient  # noqa: E402
 
 LLMClient.query = _mock_query
+IS_RESUME_MODE = True
 
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -136,7 +139,7 @@ db_config = DatabaseConfig(
     parent_selection_strategy="power_law",
     exploitation_alpha=1.0,
     exploitation_ratio=0.3,
-    migration_interval=999,   # effectively disable migration (1 island)
+    migration_interval=999,  # effectively disable migration (1 island)
 )
 
 evo_config = EvolutionConfig(
@@ -145,27 +148,30 @@ evo_config = EvolutionConfig(
         "The goal is to maximise the returned value. "
         "Be creative — change constants, restructure the logic, try new ideas."
     ),
-    patch_types=["full"],             # only full rewrites (easiest to mock)
+    patch_types=["full"],  # only full rewrites (easiest to mock)
     patch_type_probs=[1.0],
-    num_generations=20,               # keep it short
-    max_parallel_jobs=1,              # serial for easy debugging
+    num_generations=20,  # keep it short
+    max_parallel_jobs=1,  # serial for easy debugging
     max_patch_resamples=1,
     max_patch_attempts=1,
     language="python",
-    llm_models=["mock-llm"],          # not used — we monkeypatch query()
+    llm_models=["mock-llm"],  # not used — we monkeypatch query()
     llm_kwargs=dict(
         temperatures=[0.7],
         max_tokens=2048,
     ),
-    embedding_model=None,             # skip embeddings
-    code_embed_sim_threshold=1.0,     # disable novelty rejection
+    embedding_model=None,  # skip embeddings
+    code_embed_sim_threshold=1.0,  # disable novelty rejection
     init_program_path="initial.py",
     results_dir="results_sandbox",
-    interactive_mode=True,            # ← enable interactive tables
+    interactive_mode=True,  # ← enable interactive tables
+    # for resume mode
+    interaction_mode="manual" if IS_RESUME_MODE else "auto",
 )
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
+
 
 def _clean_previous_run() -> None:
     """Remove stale artefacts from a previous run so we always start fresh."""
@@ -187,7 +193,8 @@ def _clean_previous_run() -> None:
 
 
 def main():
-    _clean_previous_run()
+    if not IS_RESUME_MODE:
+        _clean_previous_run()
 
     print("=" * 72)
     print("  Interactive Sandbox — Mock Evolution")

@@ -30,6 +30,7 @@ class CommandType(str, Enum):
     STOP = "stop"
     SUGGEST = "suggest"
     MERGE = "merge"
+    CONTINUE = "continue"
 
 
 class CommandStatus(str, Enum):
@@ -45,6 +46,7 @@ class RunState(str, Enum):
     IDLE = "idle"           # generations done, still accepting interactive commands
     COMPLETED = "completed"
     STOPPED = "stopped"
+    WAITING = "waiting"   # manual mode: waiting for human to click Continue
     ERROR = "error"
 
 

@@ -32,6 +32,7 @@ from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.logo import print_gradient_logo
 from shinka.interactive import WebController
+from typing import Literal
 
 FOLDER_PREFIX = "gen"
 
@@ -64,6 +65,8 @@ class EvolutionConfig:
     novelty_llm_kwargs: dict = field(default_factory=lambda: {})
     use_text_feedback: bool = False
     interactive_mode: bool = False
+    interaction_mode: Literal["auto", "wait", "manual"] = "auto"
+    interaction_wait_secs: int = 30  # seconds between submissions in "wait" mode
 
 
 @dataclass
@@ -335,7 +338,9 @@ class EvolutionRunner:
 
                     # Check for stop request
                     if self.web_controller.stop_requested:
-                        logger.info("Interactive: stop requested, finishing in-flight jobs…")
+                        logger.info(
+                            "Interactive: stop requested, finishing in-flight jobs…"
+                        )
                         # Drain running jobs
                         while self.running_jobs:
                             completed_jobs = self._check_completed_jobs()
@@ -350,9 +355,13 @@ class EvolutionRunner:
                     best = self.db.get_best_program()
                     self.web_controller.write_status(
                         generation=self.completed_generations,
-                        best_score=best.combined_score if best and best.combined_score else 0.0,
+                        best_score=best.combined_score
+                        if best and best.combined_score
+                        else 0.0,
                         queued_jobs=len(self.running_jobs),
-                        total_programs=self.db.program_count if hasattr(self.db, 'program_count') else 0,
+                        total_programs=self.db.program_count
+                        if hasattr(self.db, "program_count")
+                        else 0,
                     )
 
                 # Check for completed jobs
@@ -384,11 +393,46 @@ class EvolutionRunner:
                     continue
 
                 # Submit new jobs to fill the queue (only if we have capacity)
-                if (
+                can_submit = (
                     len(self.running_jobs) < max_jobs
                     and self.next_generation_to_submit < target_gens
-                ):
-                    self._submit_new_job()
+                )
+                mode = self.evo_config.interaction_mode
+
+                if can_submit:
+                    if mode == "manual" and self.web_controller is not None:
+                        # Manual mode: only submit when human clicks Continue
+                        if self.web_controller.continue_requested:
+                            self.web_controller.clear_continue()
+                            self._submit_new_job()
+                        else:
+                            # Report waiting state
+                            best = self.db.get_best_program()
+                            self.web_controller.write_status(
+                                generation=self.completed_generations,
+                                best_score=best.combined_score
+                                if best and best.combined_score
+                                else 0.0,
+                                queued_jobs=len(self.running_jobs),
+                                total_programs=self.db.program_count
+                                if hasattr(self.db, "program_count")
+                                else 0,
+                                waiting=True,
+                            )
+                    elif mode == "wait" and self.web_controller is not None:
+                        # Wait mode: throttle submissions by wait_secs
+                        now = time.time()
+                        if not hasattr(self, "_last_submit_time"):
+                            self._last_submit_time = 0.0
+                        if (
+                            now - self._last_submit_time
+                            >= self.evo_config.interaction_wait_secs
+                        ):
+                            self._submit_new_job()
+                            self._last_submit_time = now
+                    else:
+                        # Auto mode (default): submit whenever capacity allows
+                        self._submit_new_job()
 
                 # Wait a bit before checking again
                 time.sleep(2)
@@ -688,6 +732,8 @@ class EvolutionRunner:
         The loop only exits when the user sends a ``stop`` command or
         presses Ctrl-C (KeyboardInterrupt caught by the caller).
         """
+        mode = self.evo_config.interaction_mode
+
         while True:
             # Process any pending commands
             interactive_actions = self.web_controller.process_commands(self.db)
@@ -704,19 +750,32 @@ class EvolutionRunner:
                         time.sleep(1)
                 break
 
+            # In manual mode, submit one job when Continue is clicked
+            if mode == "manual" and self.web_controller.continue_requested:
+                if len(self.running_jobs) == 0:
+                    self.web_controller.clear_continue()
+                    # Auto-submit one generation in keepalive via suggest-like path
+                    # (The human can also use suggest/merge explicitly)
+                    self._submit_new_job()
+
             # Check for completed Interactive-spawned jobs
             completed_jobs = self._check_completed_jobs()
             for job in completed_jobs:
                 self._process_completed_job(job)
 
-            # Update status (idle=True when no Interactive jobs are running)
+            # Update status
             best = self.db.get_best_program()
+            is_idle = len(self.running_jobs) == 0
+            is_waiting = mode == "manual" and is_idle
             self.web_controller.write_status(
                 generation=self.completed_generations,
                 best_score=best.combined_score if best and best.combined_score else 0.0,
                 queued_jobs=len(self.running_jobs),
-                total_programs=self.db.program_count if hasattr(self.db, 'program_count') else 0,
-                idle=len(self.running_jobs) == 0,
+                total_programs=self.db.program_count
+                if hasattr(self.db, "program_count")
+                else 0,
+                idle=is_idle and not is_waiting,
+                waiting=is_waiting,
             )
 
             time.sleep(2)
@@ -744,19 +803,19 @@ class EvolutionRunner:
                 return
 
             # Sample inspirations for this parent
-            archive_programs, top_k_programs = (
-                self.db.sample_inspirations_for_parent(
-                    parent_program,
-                    self.db_config.num_archive_inspirations,
-                    self.db_config.num_top_k_inspirations,
-                )
+            archive_programs, top_k_programs = self.db.sample_inspirations_for_parent(
+                parent_program,
+                self.db_config.num_archive_inspirations,
+                self.db_config.num_top_k_inspirations,
             )
 
         elif action_type == "merge":
             parent_ids = action["parent_ids"]
             parent_program = self.db.get(parent_ids[0])
             if parent_program is None:
-                logger.error("Interactive merge: primary parent %s not found", parent_ids[0])
+                logger.error(
+                    "Interactive merge: primary parent %s not found", parent_ids[0]
+                )
                 return
             # Remaining parents become the archive inspirations
             archive_programs = self.db.get_programs_by_ids(parent_ids[1:])
@@ -819,7 +878,9 @@ class EvolutionRunner:
         self.running_jobs.append(running_job)
         logger.info(
             "Interactive %s: submitted generation %d (parent=%s)",
-            action_type, current_gen, parent_id,
+            action_type,
+            current_gen,
+            parent_id,
         )
 
     def _submit_new_job(self):
