@@ -25,6 +25,7 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 import shutil
@@ -118,11 +119,58 @@ def _mock_query(
     )
 
 
-# ── Monkey-patch the LLM client ────────────────────────────────────────────
+# ── Mock Embedding ──────────────────────────────────────────────────────────
+
+_EMBED_DIM = 256
+_EMBED_COUNTER = 0
+
+
+def _mock_get_embedding(
+    self,
+    code,
+):
+    """
+    Drop-in replacement for ``EmbeddingClient.get_embedding``.
+
+    Returns a deterministic random embedding vector seeded from the hash of
+    the input code, so identical code always produces the same vector.
+    """
+    global _EMBED_COUNTER
+    _EMBED_COUNTER += 1
+
+    if isinstance(code, list):
+        embeddings = []
+        for c in code:
+            seed = int(hashlib.sha256(c.encode("utf-8")).hexdigest(), 16) % (2**32)
+            rng = random.Random(seed)
+            vec = [rng.gauss(0, 1) for _ in range(_EMBED_DIM)]
+            embeddings.append(vec)
+        print(f"[MOCK EMBEDDING #{_EMBED_COUNTER}]  batch={len(code)} dim={_EMBED_DIM}")
+        return embeddings, 0.0
+
+    seed = int(hashlib.sha256(code.encode("utf-8")).hexdigest(), 16) % (2**32)
+    rng = random.Random(seed)
+    vec = [rng.gauss(0, 1) for _ in range(_EMBED_DIM)]
+    print(f"[MOCK EMBEDDING #{_EMBED_COUNTER}]  len(code)={len(code)} dim={_EMBED_DIM}")
+    return vec, 0.0
+
+
+def _mock_embed_init(self, model_name="mock-embedding", verbose=False):
+    """Skip real API client creation."""
+    self.client = None
+    self.model = model_name
+    self.model_name = model_name
+    self.verbose = verbose
+
+
+# ── Monkey-patch the LLM + Embedding clients ───────────────────────────────
 
 from shinka.llm.llm import LLMClient  # noqa: E402
+from shinka.llm.embedding import EmbeddingClient  # noqa: E402
 
 LLMClient.query = _mock_query
+EmbeddingClient.__init__ = _mock_embed_init
+EmbeddingClient.get_embedding = _mock_get_embedding
 IS_RESUME_MODE = True
 
 
@@ -160,8 +208,8 @@ evo_config = EvolutionConfig(
         temperatures=[0.7],
         max_tokens=2048,
     ),
-    embedding_model=None,  # skip embeddings
-    code_embed_sim_threshold=1.0,  # disable novelty rejection
+    embedding_model="mock-embedding",  # use mocked embedding
+    code_embed_sim_threshold=0.95,  # enable novelty rejection
     init_program_path="initial.py",
     results_dir="results_sandbox",
     interactive_mode=True,  # ← enable interactive tables

@@ -18,4 +18,5 @@ defaults:
   archive_size: 10
   parent_selection_strategy: power_law
   llm_models: [mock-llm]
-  embedding_model: null
+  embedding_model: mock-embedding
+  code_embed_sim_threshold: 0.95
