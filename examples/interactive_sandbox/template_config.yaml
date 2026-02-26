@@ -12,9 +12,9 @@ task_sys_msg: >
 defaults:
   patch_types: [full]
   patch_type_probs: [1.0]
-  num_generations: 20
+  num_generations: 200
   max_parallel_jobs: 1
-  num_islands: 1
+  num_islands: 5
   archive_size: 10
   parent_selection_strategy: power_law
   llm_models: [mock-llm]
