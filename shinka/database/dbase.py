@@ -50,7 +50,7 @@ def clean_nan_values(obj: Any) -> Any:
 
 @dataclass
 class DatabaseConfig:
-    db_path: Optional[str] = None  # Path to SQLite database file
+    db_path: Optional[str] = "evolution_db.sqlite"  # Path to SQLite database file
     num_islands: int = 4
     archive_size: int = 100
 
