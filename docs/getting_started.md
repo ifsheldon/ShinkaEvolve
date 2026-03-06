@@ -93,6 +93,8 @@ Create a `.env` file in the project root with your API keys:
 # .env file
 OPENAI_API_KEY=sk-proj-your-key-here
 ANTHROPIC_API_KEY=your-anthropic-key-here  # Optional
+OPENROUTER_API_KEY=sk-or-v1-...             # Optional (for openrouter/* models)
+LOCAL_OPENAI_API_KEY=local                  # Optional (for local/*@http(s)://... models)
 ```
 
 ### Step 4: Verify Installation
@@ -149,6 +151,34 @@ shinka_launch \
     evo_config.num_generations=5
 ```
 
+### Agent-Friendly CLI (`shinka_run`)
+
+Use `shinka_run` when you want a direct task-directory launcher for agents.
+
+```bash
+# Full CLI docs
+shinka_run --help
+
+# Minimal async run
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_run \
+    --num_generations 20
+
+# With namespaced keyword overrides
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_custom \
+    --num_generations 40 \
+    --set evo.max_parallel_jobs=6 \
+    --set db.num_islands=3 \
+    --set job.time=00:10:00
+```
+
+`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
+`--set` uses strict namespaces: `evo.<field>`, `db.<field>`, `job.<field>`.  
+`--results_dir` and `--num_generations` are always authoritative.
+
 ### Python API Usage
 
 For more control, you can use the Python API directly:
@@ -189,6 +219,17 @@ runner = EvolutionRunner(
     db_config=db_config,
 )
 runner.run()
+```
+
+Dynamic backend model formats are also supported:
+
+```python
+evo_config = EvolutionConfig(
+    llm_models=[
+        "openrouter/qwen/qwen3-coder",
+        "local/qwen2.5-coder@http://localhost:11434/v1",
+    ],
+)
 ```
 
 For detailed configuration options and advanced settings, see the [Configuration Guide](configuration.md).
@@ -257,11 +298,16 @@ def main(program_path: str, results_dir: str):
         results_dir=results_dir,
         experiment_fn_name="run_packing",        # Function to call in evolved code
         num_runs=1,                              # Number of test runs
+        run_workers=1,                           # >1 enables per-run process parallelism
         get_experiment_kwargs=get_kwargs_fn,     # Arguments for each run
         validate_fn=validation_function,         # Validation logic
         aggregate_metrics_fn=metrics_function,   # Metrics computation
     )
 ```
+
+`run_workers` controls only repeated runs *inside one evaluation script call*.  
+This is separate from evolution-level job concurrency (`max_parallel_jobs`).  
+Early stopping (`early_stop_method`) is currently supported only with `run_workers=1`.
 
 **Key Components:**
 
@@ -464,6 +510,7 @@ python -c "import shinka; print(shinka.__file__)"
 cat .env
 # Check environment variables
 python -c "import os; print(os.getenv('OPENAI_API_KEY'))"
+python -c "import os; print(os.getenv('OPENROUTER_API_KEY'))"
 ```
 
 **3. Evaluation Failures**
