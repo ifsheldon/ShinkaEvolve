@@ -180,14 +180,14 @@ job_config = LocalJobConfig(eval_program_path="evaluate.py")
 
 db_config = DatabaseConfig(
     db_path="evolution_db.sqlite",
-    num_islands=1,
+    num_islands=5,
     archive_size=10,
     num_archive_inspirations=2,
     num_top_k_inspirations=1,
     parent_selection_strategy="power_law",
     exploitation_alpha=1.0,
     exploitation_ratio=0.3,
-    migration_interval=999,  # effectively disable migration (1 island)
+    migration_interval=10,  # enable migration across islands
 )
 
 evo_config = EvolutionConfig(
@@ -198,7 +198,7 @@ evo_config = EvolutionConfig(
     ),
     patch_types=["full"],  # only full rewrites (easiest to mock)
     patch_type_probs=[1.0],
-    num_generations=20,  # keep it short
+    num_generations=200,
     max_parallel_jobs=1,  # serial for easy debugging
     max_patch_resamples=1,
     max_patch_attempts=1,
