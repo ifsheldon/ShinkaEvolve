@@ -16,6 +16,7 @@ THINKING_TOKENS = {
     "medium": 4096,
     "high": 8192,
     "max": 16384,
+    "dynamic": -1,  # Gemini: -1 signals dynamic/unlimited thinking budget
 }
 
 
