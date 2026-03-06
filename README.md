@@ -7,32 +7,46 @@
   <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" />
   <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/master/LICENSE.md"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
-  <a href="http://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
+  <a href="https://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
+  <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/Blog%20%7C%20SakanaAI-0A66C2.svg" /></a>
   <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" /></a>
 </p>
 
 
-[`ShinkaEvolve`](https://arxiv.org/abs/2509.19349) is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `ShinkaEvolve` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
+[`shinka`]() is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
-The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `ShinkaEvolve` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
+---
 
-![evolution](https://github.com/user-attachments/assets/22cf3468-17fe-4995-9e13-d602b490a54e)
+**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for [agentic task generation and evolution](docs/agentic_usage.md).
+
+**Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
+
+**Nov 2025 Update**: Rob gave several public talks about our ShinkaEvolve effort ([Official](https://x.com/SakanaAILabs/status/1989352976792846356?s=20), [AutoML Seminar](https://www.youtube.com/watch?v=dAOIer_1INo)).
+
+**Oct 2025 Update** ShinkaEvolve supported Team Unagi in winning the [ICFP 2025 Programming Contest](https://sakana.ai/icfp-2025/).
+
+---
+
+The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `shinka` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
+
+![](docs/media/conceptual.png)
 
 ## Documentation 📝
 
 | Guide | Description | What You'll Learn |
 |-------|-------------|-------------------|
 | 🚀 **[Getting Started](docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
-| 📓 **[Tutorial Notebook](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
+| 📓 **[Tutorial](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
 | ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
 | 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
-|🕹️ **[Local LLM Support](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)**| Instructions for Local LLMs | How to setup local LLMs on your machine|
+| ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, performance tuning, migration guide | 
+| 🧠 **[Local LLM](docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
+| 🤖 **[Agentic Usage](docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
+
 
 ## Installation & Quick Start 🚀
 
 ```bash
-# Clone the repository
-git clone https://github.com/SakanaAI/ShinkaEvolve
 # Install uv if you haven't already
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -46,6 +60,15 @@ uv pip install -e .
 shinka_launch variant=circle_packing_example
 ```
 
+Dynamic backend IDs are supported in `llm_models`, e.g.:
+
+```yaml
+evo_config:
+  llm_models:
+    - openrouter/qwen/qwen3-coder
+    - local/qwen2.5-coder@http://localhost:11434/v1
+```
+
 For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
 
 ## Examples 📖
@@ -53,8 +76,8 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | Example | Description | Environment Setup |
 |---------|-------------|-------------------|
 | ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
-| 🤖 [Agent Design](examples/adas_aime) | Design agent scaffolds for math tasks. | `LocalJobConfig` |
-| 🎯 [ALE-Bench](examples/ale_bench) | Code optimization for ALE-Bench tasks. | `LocalJobConfig` |
+| 🎮 [Game 2048](examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
+| ∑ [Julia Prime Counting](examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
 | ✨ [Novelty Generator](examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
@@ -62,24 +85,69 @@ For detailed installation instructions and usage examples, see the [Getting Star
 
 For the simplest setup with default settings, you only need to specify the evaluation program:
 
+<table>
+<tr>
+<td width="50%">
+
+**`EvolutionRunner` - Synchronous**
+
 ```python
-from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.core import EvolutionRunner
+from shinka.core import EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
-# Minimal config - only specify what's required
-job_config = LocalJobConfig(eval_program_path="evaluate.py")
-db_config = DatabaseConfig()
-evo_config = EvolutionConfig(init_program_path="initial.py",)
-
-# Run evolution with defaults
-runner = EvolutionRunner(
-    evo_config=evo_config,
-    job_config=job_config,
-    db_config=db_config,
+# Minimal - only specify what's required
+job_conf = LocalJobConfig(
+    eval_program_path="evaluate.py",
 )
+db_conf = DatabaseConfig()
+evo_conf = EvolutionConfig(
+    init_program_path="initial.py",
+)
+
+# Evolution: parallel evals & seq. gen.
+runner = EvolutionRunner(
+    evo_config=evo_conf,
+    job_config=job_conf,
+    db_config=db_conf,
+)
+
 runner.run()
 ```
+
+</td>
+<td width="50%">
+
+**`AsyncEvolutionRunner` - Asynchronous**
+
+```python
+import asyncio
+from shinka.core import AsyncEvolutionRunner, ...
+
+async def main():
+    # Same import & setup of hyperparams
+    job_conf = LocalJobConfig(...)
+    db_conf = DatabaseConfig()
+    evo_conf = EvolutionConfig(...)
+    
+    # Async evolution with concurrent proposals
+    runner = AsyncEvolutionRunner(
+        evo_config=evo_conf,
+        job_config=job_conf,
+        db_config=db_conf,
+        max_proposal_jobs=10,  # Proposals workers
+        max_evaluation_jobs=10,  # Proposal workers
+    )
+
+    await runner.run()
+
+# Asyncio execution
+asyncio.run(main())
+```
+</td>
+</tr>
+</table>
 
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
@@ -197,6 +265,7 @@ def main(program_path: str,
         results_dir=results_dir,
         experiment_fn_name="run_experiment",
         num_runs=3, # Multi-evals to aggreg.
+        run_workers=1,  # >1 enables per-run process parallelism
         get_experiment_kwargs=get_kwargs,
         aggregate_metrics_fn=aggregate_fn,
         validate_fn=validate_fn,  # Optional
@@ -277,12 +346,40 @@ shinka_launch \
 
 For comprehensive configuration options and advanced usage, see the [Configuration Guide](docs/configuration.md).
 
+## `shinka_run` Agent CLI 🤖
+
+`shinka_run` is a task-directory launcher for async evolution. It is designed for agent workflows and does not require Hydra config files.
+
+```bash
+# Inspect full interface (detailed help)
+shinka_run --help
+
+# Minimal run
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_run \
+    --num_generations 20
+
+# Run with keyword overrides
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_custom \
+    --num_generations 50 \
+    --set evo.max_parallel_jobs=6 \
+    --set db.num_islands=3 \
+    --set job.time=00:10:00 \
+    --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
+```
+
+`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
+`--results_dir` and `--num_generations` are authoritative and always override `--set evo.results_dir=...` and `--set evo.num_generations=...`.
+
 
 ## Interactive WebUI 🎨
 
 Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
-![WebUI Screenshot](docs/webui.png)
+![WebUI Screenshot](docs/media/webui.png)
 
 ### Quick Start
 
