@@ -1,5 +1,6 @@
 from .runner import EvolutionRunner, EvolutionConfig
 from .async_runner import AsyncEvolutionRunner
+from .async_interactive_runner import AsyncInteractiveRunner
 from .sampler import PromptSampler
 from .summarizer import MetaSummarizer
 from .novelty_judge import NoveltyJudge
@@ -18,6 +19,7 @@ __all__ = [
     "NoveltyJudge",
     "AsyncNoveltyJudge",
     "AsyncEvolutionRunner",
+    "AsyncInteractiveRunner",
     "EvolutionConfig",
     "run_shinka_eval",
     "SystemPromptEvolver",

@@ -637,6 +637,82 @@ class AsyncProgramDatabase:
             logger.error(f"Error in async get: {e}")
             raise
 
+    async def get_programs_by_ids_async(
+        self, program_ids: List[str]
+    ) -> List[Program]:
+        """Async version of get_programs_by_ids for interactive operations."""
+        op_id = self._debug_track_start(
+            "get_programs_by_ids_async", count=len(program_ids)
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def get_by_ids_thread_safe():
+                thread_op_id = self._debug_track_start("get_by_ids_thread_safe")
+                try:
+                    from .dbase import ProgramDatabase
+
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    try:
+                        result = thread_db.get_programs_by_ids(program_ids)
+                        self._debug_track_end(thread_op_id, success=True)
+                        return result
+                    finally:
+                        thread_db.close()
+                except Exception as e:
+                    self._debug_track_end(thread_op_id, success=False)
+                    raise
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(self.executor, get_by_ids_thread_safe)
+            self._debug_track_end(op_id, success=True)
+            return result
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async get_programs_by_ids: {e}")
+            raise
+
+    async def sample_inspirations_for_parent_async(
+        self, parent: Program, num_archive_insp: int, num_top_k_insp: int
+    ) -> Tuple[List[Program], List[Program]]:
+        """Async version of sample_inspirations_for_parent for interactive operations."""
+        op_id = self._debug_track_start(
+            "sample_inspirations_for_parent_async", parent_id=parent.id
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def sample_insps_thread_safe():
+                thread_op_id = self._debug_track_start("sample_insps_thread_safe")
+                try:
+                    from .dbase import ProgramDatabase
+
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    try:
+                        result = thread_db.sample_inspirations_for_parent(
+                            parent, num_archive_insp, num_top_k_insp
+                        )
+                        self._debug_track_end(thread_op_id, success=True)
+                        return result
+                    finally:
+                        thread_db.close()
+                except Exception as e:
+                    self._debug_track_end(thread_op_id, success=False)
+                    raise
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.executor, sample_insps_thread_safe
+            )
+            self._debug_track_end(op_id, success=True)
+            return result
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async sample_inspirations_for_parent: {e}")
+            raise
+
     async def get_best_program_async(self) -> Optional[Program]:
         """Async version of get best program."""
         # Debug tracking

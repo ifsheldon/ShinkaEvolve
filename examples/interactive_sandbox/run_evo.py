@@ -38,10 +38,10 @@ from typing import Dict, List, Optional
 # We never actually call the embedding API (embedding_model=None disables it).
 os.environ.setdefault("OPENAI_API_KEY", "sk-fake-for-sandbox-testing")
 
-from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.core import EvolutionRunner, EvolutionConfig, AsyncInteractiveRunner
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
-from shinka.llm.models.result import QueryResult
+from shinka.llm.providers.result import QueryResult
 
 
 # ── Mock LLM ────────────────────────────────────────────────────────────────
@@ -55,6 +55,8 @@ def _mock_query(
     system_msg: str,
     msg_history: List[Dict] = [],
     llm_kwargs: Optional[Dict] = None,
+    model_sample_probs: Optional[List[float]] = None,
+    model_posterior: Optional[List[float]] = None,
 ) -> QueryResult:
     """
     Drop-in replacement for ``LLMClient.query``.
@@ -165,10 +167,26 @@ def _mock_embed_init(self, model_name="mock-embedding", verbose=False):
 
 # ── Monkey-patch the LLM + Embedding clients ───────────────────────────────
 
-from shinka.llm.llm import LLMClient  # noqa: E402
-from shinka.llm.embedding import EmbeddingClient  # noqa: E402
+from shinka.llm.llm import LLMClient, AsyncLLMClient  # noqa: E402
+from shinka.embed.embedding import EmbeddingClient  # noqa: E402
+
+
+async def _mock_async_query(
+    self,
+    msg: str,
+    system_msg: str,
+    msg_history: List[Dict] = [],
+    llm_kwargs: Optional[Dict] = None,
+    model_sample_probs: Optional[List[float]] = None,
+    model_posterior: Optional[List[float]] = None,
+) -> QueryResult:
+    """Async drop-in replacement for ``AsyncLLMClient.query``."""
+    # Delegate to the sync mock — the logic is identical.
+    return _mock_query(self, msg, system_msg, msg_history, llm_kwargs)
+
 
 LLMClient.query = _mock_query
+AsyncLLMClient.query = _mock_async_query
 EmbeddingClient.__init__ = _mock_embed_init
 EmbeddingClient.get_embedding = _mock_get_embedding
 IS_RESUME_MODE = True
@@ -262,5 +280,37 @@ def main():
     runner.run()
 
 
+async def main_async():
+    """Async version using AsyncInteractiveRunner for 5-10x faster evolution."""
+    if not IS_RESUME_MODE:
+        _clean_previous_run()
+
+    print("=" * 72)
+    print("  Interactive Sandbox — Mock Evolution (ASYNC)")
+    print("  DB:  evolution_db.sqlite")
+    print("  Interactive mode: ON")
+    print("=" * 72)
+    print()
+    print("Tip: start the evolve-shell UI in another terminal to interact.")
+    print("     You can pause/resume/suggest/merge from the web interface.\n")
+
+    runner = AsyncInteractiveRunner(
+        evo_config=evo_config,
+        job_config=job_config,
+        db_config=db_config,
+        max_evaluation_jobs=2,
+        max_proposal_jobs=4,
+        verbose=True,
+    )
+    await runner.run()
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--async" in sys.argv:
+        import asyncio
+
+        asyncio.run(main_async())
+    else:
+        main()

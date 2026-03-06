@@ -2641,6 +2641,8 @@ class AsyncEvolutionRunner:
         resample_attempt: int = 1,
         model_sample_probs: Optional[List[float]] = None,
         model_posterior: Optional[List[float]] = None,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> Optional[Tuple[Optional[str], Dict[str, Any], bool]]:
         """Run async patch generation."""
         # Initialize prompt-related variables outside try block for exception handling
@@ -2661,6 +2663,8 @@ class AsyncEvolutionRunner:
                 archive_inspirations=archive_programs,
                 top_k_inspirations=top_k_programs,
                 meta_recommendations=meta_recs,
+                patch_type_override=patch_type_override,
+                user_suggestions=user_suggestions,
             )
 
             # Restore original task_sys_msg
