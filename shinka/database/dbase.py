@@ -954,15 +954,11 @@ class ProgramDatabase:
             get_program_func=self.get,
             best_program_id=self.best_program_id,
             get_island_idx_func=(
-                self.island_manager.get_island_idx
-                if self.island_manager
-                else None
+                self.island_manager.get_island_idx if self.island_manager else None
             ),
             program_from_row_func=self._program_from_row,
         )
-        return context_selector.sample_context(
-            parent, num_archive_insp, num_top_k_insp
-        )
+        return context_selector.sample_context(parent, num_archive_insp, num_top_k_insp)
 
     @db_retry()
     def get_ancestry(self, program_id: str, max_ancestors: int = 10) -> List[Program]:
@@ -1440,10 +1436,11 @@ class ProgramDatabase:
             progs_with_metrics = [p for p in programs if p.public_metrics]
             sorted_p = sorted(
                 progs_with_metrics,
-                key=lambda p_item: sum(p_item.public_metrics.values())
-                / len(p_item.public_metrics)
-                if p_item.public_metrics
-                else -float("inf"),
+                key=lambda p_item: (
+                    sum(p_item.public_metrics.values()) / len(p_item.public_metrics)
+                    if p_item.public_metrics
+                    else -float("inf")
+                ),
                 reverse=True,
             )
 
@@ -1687,10 +1684,11 @@ class ProgramDatabase:
                 progs_with_metrics = [p for p in programs if p.public_metrics]
                 sorted_p = sorted(
                     progs_with_metrics,
-                    key=lambda p_item: sum(p_item.public_metrics.values())
-                    / len(p_item.public_metrics)
-                    if p_item.public_metrics
-                    else -float("inf"),
+                    key=lambda p_item: (
+                        sum(p_item.public_metrics.values()) / len(p_item.public_metrics)
+                        if p_item.public_metrics
+                        else -float("inf")
+                    ),
                     reverse=True,
                 )
 
