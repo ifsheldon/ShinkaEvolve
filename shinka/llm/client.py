@@ -11,7 +11,7 @@ from .providers.model_resolver import resolve_model_backend
 env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
-TIMEOUT = 600
+TIMEOUT = 900
 
 
 def _build_azure_endpoint() -> str:
