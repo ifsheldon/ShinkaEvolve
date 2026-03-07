@@ -130,6 +130,7 @@ def sample_model_kwargs(
         elif r_effort == "max":
             kwargs_dict["reasoning"] = {"effort": "high"}
         else:
+            # Passes through "low", "medium", "high", "xhigh" directly
             kwargs_dict["reasoning"] = {"effort": r_effort}
 
         # 4.b.1) SET: auto-summarization for OpenAI reasoning effort
