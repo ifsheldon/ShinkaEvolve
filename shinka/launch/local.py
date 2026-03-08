@@ -168,6 +168,10 @@ def monitor(
                     f"Process {process.pid} exceeded timeout of {timeout}. Killing."
                 )
             process.kill()
+            # Write timeout marker before load_results is called
+            from shinka.utils import write_timeout_marker
+
+            write_timeout_marker(results_dir, timeout_seconds)
             break
 
         if verbose:

@@ -35,7 +35,7 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.embed import AsyncEmbeddingClient
-from shinka.launch import JobScheduler, JobConfig
+from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -255,6 +255,12 @@ class AsyncEvolutionRunner:
             )
         else:
             self.embedding_client = None
+
+        # Propagate eval_timeout to LocalJobConfig.time if set
+        if evo_config.eval_timeout and isinstance(job_config, LocalJobConfig):
+            h, remainder = divmod(evo_config.eval_timeout, 3600)
+            m, s = divmod(remainder, 60)
+            job_config.time = f"{h:02d}:{m:02d}:{s:02d}"
 
         # Job scheduler
         self.scheduler = JobScheduler(
@@ -2946,9 +2952,11 @@ class AsyncEvolutionRunner:
                 return False
 
             # Always create a program entry, even if results are missing
+            error_type = None
             if results:
                 # Extract metrics properly like the sync version
                 correct_val = results.get("correct", {}).get("correct", False)
+                error_type = results.get("correct", {}).get("error_type")
                 metrics_val = results.get("metrics", {})
                 combined_score = metrics_val.get("combined_score", 0.0)
                 public_metrics = metrics_val.get("public", {})
@@ -2967,6 +2975,7 @@ class AsyncEvolutionRunner:
                     f"Creating program entry with default values to avoid job loss."
                 )
                 correct_val = False
+                error_type = "crash"
                 combined_score = 0.0
                 public_metrics = {}
                 private_metrics = {}
@@ -2978,6 +2987,20 @@ class AsyncEvolutionRunner:
             system_prompt_id = None
             if job.meta_patch_data:
                 system_prompt_id = job.meta_patch_data.get("system_prompt_id")
+
+            # Build metadata dict
+            program_metadata = {
+                "compute_time": time.time() - job.start_time,
+                **(job.meta_patch_data or {}),
+                "embed_cost": job.embed_cost,
+                "novelty_cost": job.novelty_cost,
+                "stdout_log": stdout_log,
+                "stderr_log": stderr_log,
+                "results_missing": results is None,
+                "safe_processing": True,
+            }
+            if error_type:
+                program_metadata["error_type"] = error_type
 
             # Create program from results (or defaults if results missing)
             program = Program(
@@ -2996,16 +3019,7 @@ class AsyncEvolutionRunner:
                 code_diff=job.code_diff,
                 embedding=job.code_embedding or [],
                 system_prompt_id=system_prompt_id,  # Track evolved prompt
-                metadata={
-                    "compute_time": time.time() - job.start_time,
-                    **(job.meta_patch_data or {}),
-                    "embed_cost": job.embed_cost,
-                    "novelty_cost": job.novelty_cost,
-                    "stdout_log": stdout_log,
-                    "stderr_log": stderr_log,
-                    "results_missing": results is None,
-                    "safe_processing": True,
-                },
+                metadata=program_metadata,
             )
 
             # Add to database with timeout protection

@@ -89,6 +89,9 @@ def save_json_results(
     os.makedirs(results_dir, exist_ok=True)
 
     correct_payload = {"correct": correct, "error": error}
+    # Tag error_type for distinguishing runtime errors from timeouts/crashes
+    if not correct and error is not None:
+        correct_payload["error_type"] = "runtime_error"
     correct_file = os.path.join(results_dir, "correct.json")
     with open(correct_file, "w") as f:
         json.dump(correct_payload, f, indent=4)

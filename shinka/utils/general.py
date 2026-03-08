@@ -71,8 +71,16 @@ def load_results(results_dir: str):
     if correct_file_path.exists():
         with open(correct_file_path, "r") as f:
             loaded_results["correct"] = json.load(f)
+        # Infer error_type for backward compatibility
+        if not loaded_results["correct"].get("correct", False):
+            if "error_type" not in loaded_results["correct"]:
+                loaded_results["correct"]["error_type"] = "runtime_error"
     else:
-        loaded_results["correct"] = {"correct": False}
+        loaded_results["correct"] = {
+            "correct": False,
+            "error_type": "crash",
+            "error": "Process terminated without writing results",
+        }
 
     return loaded_results
 
@@ -84,3 +92,24 @@ def parse_time_to_seconds(time_str: str) -> int:
         raise ValueError("Time format must be hh:mm:ss")
     h, m, s = [int(p) for p in parts]
     return h * 3600 + m * 60 + s
+
+
+def write_timeout_marker(results_dir: str, timeout_seconds: int = None):
+    """Write a correct.json marking this evaluation as timed out.
+
+    Called by the scheduler/monitor after killing a timed-out process,
+    before load_results() is called.
+    """
+    results_dir_path = Path(results_dir)
+    results_dir_path.mkdir(parents=True, exist_ok=True)
+    correct_data = {
+        "correct": False,
+        "error": (
+            f"Evaluation timed out after {timeout_seconds}s"
+            if timeout_seconds
+            else "Evaluation timed out"
+        ),
+        "error_type": "timeout",
+    }
+    with open(results_dir_path / "correct.json", "w") as f:
+        json.dump(correct_data, f)

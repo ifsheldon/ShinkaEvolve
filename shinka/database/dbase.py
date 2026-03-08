@@ -440,6 +440,9 @@ class ProgramDatabase:
                 embedding_cluster_id INTEGER,
                 correct BOOLEAN DEFAULT 0,  -- Correct (0=False, 1=True)
                 children_count INTEGER NOT NULL DEFAULT 0,
+                -- TODO: Consider adding a dedicated `error_type TEXT` column for
+                -- SQL-queryable error classification (timeout, runtime_error, crash).
+                -- Currently error_type is stored in the metadata JSON field.
                 metadata TEXT,      -- JSON serialized Dict[str, Any]
                 migration_history TEXT, -- JSON of migration events
                 island_idx INTEGER,  -- Add island_idx to the schema

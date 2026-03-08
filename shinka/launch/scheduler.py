@@ -267,6 +267,11 @@ class JobScheduler:
                                 f"=> Gen. {job.generation}"
                             )
                         job.job_id.kill()
+                        # Write timeout marker before load_results is called
+                        from shinka.utils import write_timeout_marker
+
+                        if hasattr(job, "results_dir"):
+                            write_timeout_marker(job.results_dir, timeout)
                         return False
 
                 # More robust status checking with exception handling

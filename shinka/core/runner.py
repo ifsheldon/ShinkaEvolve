@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from subprocess import Popen
-from shinka.launch import JobScheduler, JobConfig, ProcessWithLogging
+from shinka.launch import JobScheduler, JobConfig, LocalJobConfig, ProcessWithLogging
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
 from shinka.llm import (
     LLMClient,
@@ -76,6 +76,7 @@ class EvolutionConfig:
     interaction_mode: Literal["auto", "wait", "manual"] = "auto"
     interaction_wait_secs: int = 30  # seconds between submissions in "wait" mode
     max_api_costs: Optional[float] = None
+    eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
     inspiration_sort_order: str = "ascending"  # "ascending", "chronological", "none"
 
     # Meta-prompt evolution settings
@@ -251,6 +252,12 @@ class EvolutionRunner:
         if self.evo_config.interactive_mode:
             self.web_controller = WebController(db_path=str(db_path))
             logger.info("Interactive web controller enabled")
+
+        # Propagate eval_timeout to LocalJobConfig.time if set
+        if evo_config.eval_timeout and isinstance(job_config, LocalJobConfig):
+            h, remainder = divmod(evo_config.eval_timeout, 3600)
+            m, s = divmod(remainder, 60)
+            job_config.time = f"{h:02d}:{m:02d}:{s:02d}"
 
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type,
@@ -1483,8 +1490,10 @@ class EvolutionRunner:
         metrics_val = {}
         stdout_log = ""
         stderr_log = ""
+        error_type = None
         if results:
             correct_val = results.get("correct", {}).get("correct", False)
+            error_type = results.get("correct", {}).get("error_type")
             metrics_val = results.get("metrics", {})
             stdout_log = results.get("stdout_log", "")
             stderr_log = results.get("stderr_log", "")
@@ -1493,6 +1502,18 @@ class EvolutionRunner:
         public_metrics = metrics_val.get("public", {})
         private_metrics = metrics_val.get("private", {})
         text_feedback = metrics_val.get("text_feedback", "")
+
+        # Build metadata dict
+        program_metadata = {
+            "compute_time": rtime,
+            **(job.meta_patch_data or {}),
+            "embed_cost": e_cost,
+            "novelty_cost": n_cost,
+            "stdout_log": stdout_log,
+            "stderr_log": stderr_log,
+        }
+        if error_type:
+            program_metadata["error_type"] = error_type
 
         # Add the program to the database
         db_program = Program(
@@ -1510,14 +1531,7 @@ class EvolutionRunner:
             public_metrics=public_metrics,
             private_metrics=private_metrics,
             text_feedback=text_feedback,
-            metadata={
-                "compute_time": rtime,
-                **(job.meta_patch_data or {}),
-                "embed_cost": e_cost,
-                "novelty_cost": n_cost,
-                "stdout_log": stdout_log,
-                "stderr_log": stderr_log,
-            },
+            metadata=program_metadata,
         )
         self.db.add(db_program, verbose=True)
 
