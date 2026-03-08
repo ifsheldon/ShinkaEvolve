@@ -30,7 +30,6 @@ import os
 import random
 import shutil
 import textwrap
-import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -43,6 +42,8 @@ from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 from shinka.llm.providers.result import QueryResult
 
+
+IS_RESUME_MODE = False
 
 # ── Mock LLM ────────────────────────────────────────────────────────────────
 
@@ -165,10 +166,53 @@ def _mock_embed_init(self, model_name="mock-embedding", verbose=False):
     self.verbose = verbose
 
 
+def _mock_async_embed_init(self, model_name="mock-embedding", verbose=False):
+    """Skip real async API client creation."""
+    self.async_client = None
+    self.model = model_name
+    self.model_name = model_name
+    self.provider = None
+    self.verbose = verbose
+
+
+async def _mock_embed_async(self, code):
+    """Async drop-in for ``AsyncEmbeddingClient.embed_async``."""
+    global _EMBED_COUNTER
+    _EMBED_COUNTER += 1
+
+    if isinstance(code, str):
+        code = [code]
+        single = True
+    else:
+        single = False
+
+    embeddings = []
+    for c in code:
+        seed = int(hashlib.sha256(c.encode("utf-8")).hexdigest(), 16) % (2**32)
+        rng = random.Random(seed)
+        embeddings.append([rng.gauss(0, 1) for _ in range(_EMBED_DIM)])
+
+    print(
+        f"[MOCK ASYNC EMBEDDING #{_EMBED_COUNTER}]  batch={len(code)} dim={_EMBED_DIM}"
+    )
+    if single:
+        return embeddings[0], 0.0
+    return embeddings, 0.0
+
+
+def _mock_get_kwargs(self, model_sample_probs=None):
+    """Return mock kwargs without resolving model backend via pricing.csv."""
+    return {
+        "model_name": "mock-llm",
+        "temperature": 0.7,
+        "max_output_tokens": 2048,
+    }
+
+
 # ── Monkey-patch the LLM + Embedding clients ───────────────────────────────
 
 from shinka.llm.llm import LLMClient, AsyncLLMClient  # noqa: E402
-from shinka.embed.embedding import EmbeddingClient  # noqa: E402
+from shinka.embed.embedding import EmbeddingClient, AsyncEmbeddingClient  # noqa: E402
 
 
 async def _mock_async_query(
@@ -182,14 +226,25 @@ async def _mock_async_query(
 ) -> QueryResult:
     """Async drop-in replacement for ``AsyncLLMClient.query``."""
     # Delegate to the sync mock — the logic is identical.
-    return _mock_query(self, msg, system_msg, msg_history, llm_kwargs)
+    return _mock_query(
+        self,
+        msg,
+        system_msg,
+        msg_history,
+        llm_kwargs,
+        model_sample_probs,
+        model_posterior,
+    )
 
 
 LLMClient.query = _mock_query
+LLMClient.get_kwargs = _mock_get_kwargs
 AsyncLLMClient.query = _mock_async_query
+AsyncLLMClient.get_kwargs = _mock_get_kwargs
 EmbeddingClient.__init__ = _mock_embed_init
 EmbeddingClient.get_embedding = _mock_get_embedding
-IS_RESUME_MODE = True
+AsyncEmbeddingClient.__init__ = _mock_async_embed_init
+AsyncEmbeddingClient.embed_async = _mock_embed_async
 
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -216,8 +271,8 @@ evo_config = EvolutionConfig(
     ),
     patch_types=["full"],  # only full rewrites (easiest to mock)
     patch_type_probs=[1.0],
-    num_generations=200,
-    max_parallel_jobs=1,  # serial for easy debugging
+    num_generations=100,
+    max_parallel_jobs=2,
     max_patch_resamples=1,
     max_patch_attempts=1,
     language="python",
