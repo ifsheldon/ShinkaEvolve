@@ -84,11 +84,20 @@ def _mock_query(
     rand_val = random.randint(5, 50)
     rand_mul = round(random.uniform(0.5, 3.0), 2)
 
+    # ~20% of programs will include a sleep that exceeds eval_timeout (for testing)
+    sleep_line = ""
+    if random.random() < 0.2:
+        sleep_time = 6  # seconds — should exceed eval_timeout=10
+        sleep_line = (
+            f"\n        import time; time.sleep({sleep_time})  # intentional timeout"
+        )
+        print(f"  ⏱ INJECTING SLEEP of {sleep_time}s (will timeout)")
+
     fake_code = textwrap.dedent(f"""\
         import random
 
         def compute(seed: int = 42) -> float:
-            random.seed(seed)
+            random.seed(seed){sleep_line}
             x = sum(random.gauss(0, 1) for _ in range({rand_val}))
             return abs(x) * {rand_mul}
 
@@ -285,6 +294,7 @@ evo_config = EvolutionConfig(
     code_embed_sim_threshold=0.95,  # enable novelty rejection
     init_program_path="initial.py",
     results_dir="results_sandbox",
+    eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
     interactive_mode=True,  # ← enable interactive tables
     # for resume mode
     interaction_mode="manual" if IS_RESUME_MODE else "auto",
