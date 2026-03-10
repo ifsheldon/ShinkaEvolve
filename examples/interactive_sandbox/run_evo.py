@@ -13,7 +13,8 @@ Usage
 -----
     # From the ShinkaEvolve root:
     cd examples/interactive_sandbox
-    python run_evo.py
+    python run_evo.py              # fresh run (cleans previous DB/results)
+    python run_evo.py --resume     # resume mode (manual interaction, keeps prior run)
 
     # Then in another terminal, start evolve-shell to see the UI:
     cd ../../evolve-shell && npm run dev
@@ -37,13 +38,10 @@ from typing import Dict, List, Optional
 # We never actually call the embedding API (embedding_model=None disables it).
 os.environ.setdefault("OPENAI_API_KEY", "sk-fake-for-sandbox-testing")
 
-from shinka.core import EvolutionRunner, EvolutionConfig, AsyncInteractiveRunner
+from shinka.core import EvolutionConfig, AsyncInteractiveRunner
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 from shinka.llm.providers.result import QueryResult
-
-
-IS_RESUME_MODE = False
 
 # ── Mock LLM ────────────────────────────────────────────────────────────────
 
@@ -272,33 +270,35 @@ db_config = DatabaseConfig(
     migration_interval=10,  # enable migration across islands
 )
 
-evo_config = EvolutionConfig(
-    task_sys_msg=(
-        "You are evolving a simple Python function that returns a number. "
-        "The goal is to maximise the returned value. "
-        "Be creative — change constants, restructure the logic, try new ideas."
-    ),
-    patch_types=["full"],  # only full rewrites (easiest to mock)
-    patch_type_probs=[1.0],
-    num_generations=100,
-    max_parallel_jobs=2,
-    max_patch_resamples=1,
-    max_patch_attempts=1,
-    language="python",
-    llm_models=["mock-llm"],  # not used — we monkeypatch query()
-    llm_kwargs=dict(
-        temperatures=[0.7],
-        max_tokens=2048,
-    ),
-    embedding_model="mock-embedding",  # use mocked embedding
-    code_embed_sim_threshold=0.95,  # enable novelty rejection
-    init_program_path="initial.py",
-    results_dir="results_sandbox",
-    eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
-    interactive_mode=True,  # ← enable interactive tables
-    # for resume mode
-    interaction_mode="manual" if IS_RESUME_MODE else "auto",
-)
+
+def _create_evo_config(resume: bool) -> EvolutionConfig:
+    """Create evolution config with the given resume mode."""
+    return EvolutionConfig(
+        task_sys_msg=(
+            "You are evolving a simple Python function that returns a number. "
+            "The goal is to maximise the returned value. "
+            "Be creative — change constants, restructure the logic, try new ideas."
+        ),
+        patch_types=["full"],  # only full rewrites (easiest to mock)
+        patch_type_probs=[1.0],
+        num_generations=100,
+        max_parallel_jobs=2,
+        max_patch_resamples=1,
+        max_patch_attempts=1,
+        language="python",
+        llm_models=["mock-llm"],  # not used — we monkeypatch query()
+        llm_kwargs=dict(
+            temperatures=[0.7],
+            max_tokens=2048,
+        ),
+        embedding_model="mock-embedding",  # use mocked embedding
+        code_embed_sim_threshold=0.95,  # enable novelty rejection
+        init_program_path="initial.py",
+        results_dir="results_sandbox",
+        eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
+        interactive_mode=True,  # ← enable interactive tables
+        interaction_mode="manual" if resume else "auto",
+    )
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -323,31 +323,9 @@ def _clean_previous_run() -> None:
         print(f"[clean] Removed stale artefacts: {', '.join(removed)}")
 
 
-def main():
-    if not IS_RESUME_MODE:
-        _clean_previous_run()
-
-    print("=" * 72)
-    print("  Interactive Sandbox — Mock Evolution")
-    print("  DB:  evolution_db.sqlite")
-    print("  Interactive mode: ON")
-    print("=" * 72)
-    print()
-    print("Tip: start the evolve-shell UI in another terminal to interact.")
-    print("     You can pause/resume/suggest/merge from the web interface.\n")
-
-    runner = EvolutionRunner(
-        evo_config=evo_config,
-        job_config=job_config,
-        db_config=db_config,
-        verbose=True,
-    )
-    runner.run()
-
-
-async def main_async():
+async def main_async(resume: bool = False):
     """Async version using AsyncInteractiveRunner for 5-10x faster evolution."""
-    if not IS_RESUME_MODE:
+    if not resume:
         _clean_previous_run()
 
     print("=" * 72)
@@ -359,6 +337,7 @@ async def main_async():
     print("Tip: start the evolve-shell UI in another terminal to interact.")
     print("     You can pause/resume/suggest/merge from the web interface.\n")
 
+    evo_config = _create_evo_config(resume)
     runner = AsyncInteractiveRunner(
         evo_config=evo_config,
         job_config=job_config,
@@ -371,11 +350,15 @@ async def main_async():
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+    import asyncio
 
-    if "--async" in sys.argv:
-        import asyncio
+    parser = argparse.ArgumentParser(description="Interactive Sandbox — Mock Evolution")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Enable resume mode (manual interaction, do not clean previous run)",
+    )
+    args = parser.parse_args()
 
-        asyncio.run(main_async())
-    else:
-        main()
+    asyncio.run(main_async(resume=args.resume))
