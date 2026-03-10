@@ -98,7 +98,9 @@ def write_timeout_marker(results_dir: str, timeout_seconds: int = None):
     """Write a correct.json marking this evaluation as timed out.
 
     Called by the scheduler/monitor after killing a timed-out process,
-    before load_results() is called.
+    before load_results() is called.  Also overwrites metrics.json so
+    that any partially-written scores from the killed process are zeroed
+    out.
     """
     results_dir_path = Path(results_dir)
     results_dir_path.mkdir(parents=True, exist_ok=True)
@@ -113,3 +115,16 @@ def write_timeout_marker(results_dir: str, timeout_seconds: int = None):
     }
     with open(results_dir_path / "correct.json", "w") as f:
         json.dump(correct_data, f)
+
+    # Zero out combined_score in any metrics the evaluation may have
+    # written before being killed, preserving all other data.
+    metrics_path = results_dir_path / "metrics.json"
+    if metrics_path.exists():
+        try:
+            with open(metrics_path, "r") as f:
+                metrics = json.load(f)
+            metrics["combined_score"] = 0.0
+            with open(metrics_path, "w") as f:
+                json.dump(metrics, f)
+        except (json.JSONDecodeError, OSError):
+            pass
