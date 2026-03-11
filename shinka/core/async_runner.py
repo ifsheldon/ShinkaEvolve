@@ -11,6 +11,7 @@ import time
 import uuid
 import os
 import psutil
+import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union
@@ -47,6 +48,7 @@ from shinka.core.summarizer import MetaSummarizer
 from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
+from shinka.core.novelty_detector import NoveltyDetector, NoveltyLevel
 from shinka.core.runner import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
@@ -167,6 +169,9 @@ class AsyncEvolutionRunner:
             self.job_config.eval_program_path = str(evaluate_path)
             if self.verbose:
                 logger.info(f"Saved evaluate_str to {evaluate_path}")
+
+        # Save experiment configuration to YAML for the UI to read
+        self._save_experiment_config()
 
         # Validate and adjust concurrency settings based on available CPU cores
         cpu_count = os.cpu_count() or 4  # Default to 4 if can't detect
@@ -319,6 +324,12 @@ class AsyncEvolutionRunner:
         else:
             self.novelty_judge = None
 
+        # Initialize NoveltyDetector for post-evaluation novelty classification
+        self.novelty_detector = NoveltyDetector(
+            novelty_function_path=evo_config.novelty_function_path,
+            results_dir=str(self.results_dir),
+        )
+
         # Meta-prompt evolution components
         # These will be initialized in _setup_async after results_dir is set
         self.prompt_db: Optional[SystemPromptDatabase] = None
@@ -391,6 +402,25 @@ class AsyncEvolutionRunner:
         # Meta task logging state (to reduce verbosity)
         self._last_meta_log_state: dict | None = None
         self._last_meta_log_info_time: float | None = None
+
+    def _save_experiment_config(self) -> None:
+        """Save experiment configuration to YAML so the UI can read it."""
+        from dataclasses import asdict
+
+        config_data = {
+            "evolution_config": asdict(self.evo_config),
+            "job_config": asdict(self.job_config),
+            "database_config": asdict(self.db_config),
+            "timestamp": datetime.now().isoformat(),
+            "results_directory": str(self.results_dir),
+        }
+        config_path = Path(self.results_dir) / "experiment_config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with config_path.open("w", encoding="utf-8") as f:
+                yaml.dump(config_data, f, default_flow_style=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save experiment_config.yaml: {e}")
 
     def _save_bandit_state(self) -> None:
         """Save the LLM selection bandit state to disk."""
@@ -3045,6 +3075,44 @@ class AsyncEvolutionRunner:
                     f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
                 )
 
+                # --- Post-evaluation novelty detection ---
+                try:
+                    parent_prog_for_novelty = None
+                    if job.parent_id:
+                        parent_prog_for_novelty = await self.async_db.get_async(job.parent_id)
+
+                    inspiration_programs = []
+                    for insp_id in (job.archive_insp_ids or []) + (job.top_k_insp_ids or []):
+                        insp = await self.async_db.get_async(insp_id)
+                        if insp:
+                            inspiration_programs.append(insp)
+
+                    novelty_result = self.novelty_detector.detect(
+                        program=program,
+                        parent=parent_prog_for_novelty,
+                        inspirations=inspiration_programs,
+                    )
+
+                    if novelty_result.level != NoveltyLevel.NONE:
+                        program.novelty_level = novelty_result.level.value
+                        program.novelty_data = novelty_result.display_data or {}
+                        # Use the sync db's cursor for the update
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None,
+                            self._update_novelty_in_db,
+                            program.id,
+                            novelty_result.level.value,
+                            novelty_result.display_data,
+                        )
+                        logger.info(
+                            f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
+                            f"Program {program.id} (gen {program.generation}, "
+                            f"score {program.combined_score})"
+                        )
+                except Exception as e:
+                    logger.warning(f"Novelty detection failed for {program.id}: {e}")
+
                 # Update prompt fitness if prompt evolution is enabled
                 if system_prompt_id and self.evo_config.evolve_prompts:
                     # Calculate improvement (need parent score)
@@ -3871,6 +3939,26 @@ class AsyncEvolutionRunner:
 
         # If no code block found, return the whole response
         return response_content.strip()
+
+    def _update_novelty_in_db(
+        self, program_id: str, novelty_level: str, display_data: Optional[Dict]
+    ) -> None:
+        """Update novelty fields in the database (runs in executor thread)."""
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(self.db.config.db_path), timeout=30.0)
+        try:
+            conn.execute(
+                "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
+                (
+                    novelty_level,
+                    json.dumps(display_data or {}),
+                    program_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     async def _read_file_async(self, file_path: str) -> Optional[str]:
         """Read file asynchronously."""

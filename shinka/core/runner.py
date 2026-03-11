@@ -33,6 +33,7 @@ from shinka.edit import (
 from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
+from shinka.core.novelty_detector import NoveltyDetector, NoveltyLevel
 from shinka.logo import print_gradient_logo
 from shinka.interactive import WebController
 from shinka.utils import get_language_extension
@@ -105,6 +106,9 @@ class EvolutionConfig:
     prompt_percentile_recompute_interval: int = (
         20  # Recompute prompt fitness percentiles every N programs
     )
+
+    # Post-evaluation novelty detection
+    novelty_function_path: Optional[str] = None  # Path to custom novelty.py
 
 
 @dataclass
@@ -322,6 +326,12 @@ class EvolutionRunner:
             max_novelty_attempts=evo_config.max_novelty_attempts,
         )
 
+        # Initialize NoveltyDetector for post-evaluation novelty classification
+        self.novelty_detector = NoveltyDetector(
+            novelty_function_path=evo_config.novelty_function_path,
+            results_dir=str(self.results_dir),
+        )
+
         # Initialize rich console for formatted output
         self.console = Console()
         self.lang_ext = get_language_extension(self.evo_config.language)
@@ -428,6 +438,81 @@ class EvolutionRunner:
                 total_costs += program.metadata.get("novelty_cost", 0.0)
                 total_costs += program.metadata.get("meta_cost", 0.0)
         return total_costs
+
+    def _detect_novelty_threadsafe(self, db_program: Program) -> None:
+        """Run novelty detection using a dedicated SQLite connection.
+
+        This avoids SQLite ``ProgrammingError`` when called from a thread
+        different from the one that created ``self.db`` (e.g. the interactive
+        mode web-controller thread).
+
+        All DB reads (parent / inspiration lookups) and writes (UPDATE
+        novelty_level) go through the dedicated connection which is opened
+        and closed within this method.
+        """
+        import sqlite3 as _sqlite3
+
+        db_path = str(self.db.config.db_path)
+        conn = _sqlite3.connect(db_path, timeout=30.0)
+        conn.row_factory = _sqlite3.Row
+        try:
+            # --- look up parent program ---------------------------------
+            parent_program = None
+            if db_program.parent_id:
+                row = conn.execute(
+                    "SELECT * FROM programs WHERE id = ?",
+                    (db_program.parent_id,),
+                ).fetchone()
+                if row:
+                    parent_program = self.db._program_from_row(row)
+
+            # --- look up inspiration programs ---------------------------
+            inspiration_programs: list[Program] = []
+            all_insp_ids = list(
+                dict.fromkeys(  # deduplicate, preserve order
+                    (db_program.archive_inspiration_ids or [])
+                    + (db_program.top_k_inspiration_ids or [])
+                )
+            )
+            for insp_id in all_insp_ids:
+                row = conn.execute(
+                    "SELECT * FROM programs WHERE id = ?",
+                    (insp_id,),
+                ).fetchone()
+                if row:
+                    p = self.db._program_from_row(row)
+                    if p:
+                        inspiration_programs.append(p)
+
+            # --- run novelty detection ----------------------------------
+            novelty_result = self.novelty_detector.detect(
+                program=db_program,
+                parent=parent_program,
+                inspirations=inspiration_programs,
+            )
+
+            if novelty_result.level != NoveltyLevel.NONE:
+                db_program.novelty_level = novelty_result.level.value
+                db_program.novelty_data = novelty_result.display_data or {}
+                conn.execute(
+                    "UPDATE programs SET novelty_level = ?, novelty_data = ? "
+                    "WHERE id = ?",
+                    (
+                        novelty_result.level.value,
+                        json.dumps(novelty_result.display_data or {}),
+                        db_program.id,
+                    ),
+                )
+                conn.commit()
+                logger.info(
+                    f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
+                    f"Program {db_program.id} (gen {db_program.generation}, "
+                    f"score {db_program.combined_score})"
+                )
+        except Exception as e:
+            logger.warning(f"Novelty detection failed for {db_program.id}: {e}")
+        finally:
+            conn.close()
 
     def _update_avg_proposal_cost(self, proposal_cost: float) -> None:
         """Update the running average cost per proposal.
@@ -1021,6 +1106,10 @@ class EvolutionRunner:
         )
 
         self.db.add(db_program, verbose=True)
+
+        # Post-evaluation novelty detection for gen 0 (thread-safe)
+        self._detect_novelty_threadsafe(db_program)
+
         if self.llm_selection is not None:
             self.llm_selection.set_baseline_score(
                 db_program.combined_score if correct_val else 0.0,
@@ -1534,6 +1623,9 @@ class EvolutionRunner:
             metadata=program_metadata,
         )
         self.db.add(db_program, verbose=True)
+
+        # --- Post-evaluation novelty detection (thread-safe) ---
+        self._detect_novelty_threadsafe(db_program)
 
         # Update average proposal cost for in-flight estimation
         api_cost = (job.meta_patch_data or {}).get("api_costs", 0.0)
