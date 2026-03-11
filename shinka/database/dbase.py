@@ -194,6 +194,10 @@ class Program:
     # Meta-prompt evolution: track which system prompt generated this program
     system_prompt_id: Optional[str] = None
 
+    # Novelty detection results (populated by NoveltyDetector after evaluation)
+    novelty_level: str = "none"  # NoveltyLevel enum value: "none", "moderate", "high"
+    novelty_data: Dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
         data = asdict(self)
@@ -446,7 +450,9 @@ class ProgramDatabase:
                 metadata TEXT,      -- JSON serialized Dict[str, Any]
                 migration_history TEXT, -- JSON of migration events
                 island_idx INTEGER,  -- Add island_idx to the schema
-                system_prompt_id TEXT  -- ID of system prompt that generated this program
+                system_prompt_id TEXT,  -- ID of system prompt that generated this program
+                novelty_level TEXT DEFAULT 'none',  -- NoveltyLevel: none/moderate/high
+                novelty_data TEXT  -- JSON serialized novelty display data
             )
             """
         )
@@ -527,6 +533,30 @@ class ProgramDatabase:
                 logger.info("Successfully added system_prompt_id column")
         except sqlite3.Error as e:
             logger.error(f"Error during system_prompt_id migration: {e}")
+
+        # Migration 3: Add novelty_level column if it doesn't exist
+        try:
+            if "novelty_level" not in columns:
+                logger.info("Adding novelty_level column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_level TEXT DEFAULT 'none'"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_level column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_level migration: {e}")
+
+        # Migration 4: Add novelty_data column if it doesn't exist
+        try:
+            if "novelty_data" not in columns:
+                logger.info("Adding novelty_data column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_data TEXT"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_data column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_data migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -691,9 +721,9 @@ class ProgramDatabase:
                     text_feedback, complexity, embedding, embedding_pca_2d,
                     embedding_pca_3d, embedding_cluster_id, correct,
                     children_count, metadata, island_idx, migration_history,
-                    system_prompt_id)
+                    system_prompt_id, novelty_level, novelty_data)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     program.id,
@@ -720,6 +750,8 @@ class ProgramDatabase:
                     program.island_idx,
                     migration_history_json,
                     program.system_prompt_id,
+                    program.novelty_level or "none",
+                    json.dumps(program.novelty_data) if program.novelty_data else None,
                 ),
             )
 
@@ -905,6 +937,19 @@ class ProgramDatabase:
 
         # Handle archive status
         program_data["in_archive"] = bool(program_data.get("in_archive", 0))
+
+        # Handle novelty detection fields
+        if "novelty_level" not in program_data or program_data["novelty_level"] is None:
+            program_data["novelty_level"] = "none"
+
+        novelty_data_text = program_data.get("novelty_data")
+        if novelty_data_text and isinstance(novelty_data_text, str):
+            try:
+                program_data["novelty_data"] = json.loads(novelty_data_text)
+            except json.JSONDecodeError:
+                program_data["novelty_data"] = {}
+        elif not isinstance(novelty_data_text, dict):
+            program_data["novelty_data"] = {}
 
         return Program.from_dict(program_data)
 
