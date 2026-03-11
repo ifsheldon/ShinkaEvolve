@@ -32,6 +32,9 @@ class CommandType(str, Enum):
     SUGGEST = "suggest"
     MERGE = "merge"
     CONTINUE = "continue"
+    SET_TARGET = "set_target"
+    STEP = "step"
+    START = "start"
 
 
 class CommandStatus(str, Enum):
@@ -48,6 +51,7 @@ class RunState(str, Enum):
     COMPLETED = "completed"
     STOPPED = "stopped"
     WAITING = "waiting"  # manual mode: waiting for human to click Continue
+    WAITING_FOR_START = "waiting_for_start"  # runner ready, awaiting user greenlight
     ERROR = "error"
 
 
@@ -69,6 +73,8 @@ class InteractiveStatus:
     best_score: float = 0.0
     queued_jobs: int = 0
     total_programs: int = 0
+    target_generations: int = 0
+    is_resuming: bool = False
     updated_at: float = 0.0
 
 
@@ -237,6 +243,8 @@ class InteractiveDatabase:
                 "best_score": status.best_score,
                 "queued_jobs": status.queued_jobs,
                 "total_programs": status.total_programs,
+                "target_generations": status.target_generations,
+                "is_resuming": status.is_resuming,
             }
             conn.execute(
                 "INSERT OR REPLACE INTO interactive_status (key, value, updated_at) "
@@ -263,6 +271,8 @@ class InteractiveDatabase:
                 best_score=data.get("best_score", 0.0),
                 queued_jobs=data.get("queued_jobs", 0),
                 total_programs=data.get("total_programs", 0),
+                target_generations=data.get("target_generations", 0),
+                is_resuming=data.get("is_resuming", False),
                 updated_at=row["updated_at"],
             )
         finally:

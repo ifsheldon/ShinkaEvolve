@@ -35,6 +35,8 @@ class WebController:
         self._paused = False
         self._stop_requested = False
         self._continue_requested = False
+        self._step_requested = False
+        self._start_requested = False
 
     # ------------------------------------------------------------------
     # Public API used by EvolutionRunner
@@ -51,6 +53,18 @@ class WebController:
     @property
     def continue_requested(self) -> bool:
         return self._continue_requested
+
+    @property
+    def step_requested(self) -> bool:
+        """Read-and-clear: returns True once, then resets."""
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    @property
+    def start_requested(self) -> bool:
+        return self._start_requested
 
     def clear_continue(self) -> None:
         """Reset the continue flag after a job has been submitted."""
@@ -107,12 +121,27 @@ class WebController:
         best_score: float,
         queued_jobs: int,
         total_programs: int,
+        target_generations: int = 0,
         *,
         idle: bool = False,
         waiting: bool = False,
+        waiting_for_start: bool = False,
+        is_resuming: bool = False,
     ) -> None:
-        """Persist current run status so the web backend can read it."""
-        if waiting:
+        """Persist current run status so the web backend can read it.
+
+        State priority (highest first):
+        1. waiting_for_start — runner ready, awaiting user greenlight
+        2. stopped — user requested stop
+        3. paused — user paused (takes priority over idle, per bug fix a06e6fd)
+        4. idle — no jobs in flight, target reached
+        5. running — default
+        """
+        if waiting_for_start:
+            state = RunState.WAITING_FOR_START
+        elif self._stop_requested:
+            state = RunState.STOPPED
+        elif waiting:
             state = RunState.WAITING
         elif self._paused:
             state = RunState.PAUSED
@@ -120,8 +149,6 @@ class WebController:
             state = RunState.IDLE
         else:
             state = RunState.RUNNING
-        if self._stop_requested:
-            state = RunState.STOPPED
         self.interactive_db.write_status(
             InteractiveStatus(
                 run_state=state.value,
@@ -129,6 +156,8 @@ class WebController:
                 best_score=best_score,
                 queued_jobs=queued_jobs,
                 total_programs=total_programs,
+                target_generations=target_generations,
+                is_resuming=is_resuming,
             )
         )
 
@@ -169,6 +198,29 @@ class WebController:
         if ct == CommandType.CONTINUE.value:
             logger.info("Interactive: continue requested")
             self._continue_requested = True
+            return None
+
+        if ct == CommandType.START.value:
+            logger.info("Interactive: start requested (greenlight)")
+            self._start_requested = True
+            return None
+
+        if ct == CommandType.SET_TARGET.value:
+            payload = cmd.payload
+            new_target = payload.get("target_generations")
+            if new_target is None:
+                raise ValueError("set_target command requires target_generations")
+            new_target = int(new_target)
+            logger.info("Interactive: set_target — target_generations=%d", new_target)
+            return {
+                "action": "set_target",
+                "target_generations": new_target,
+                "command_id": cmd.id,
+            }
+
+        if ct == CommandType.STEP.value:
+            logger.info("Interactive: step requested")
+            self._step_requested = True
             return None
 
         if ct == CommandType.SUGGEST.value:

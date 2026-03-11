@@ -1,4 +1,5 @@
 variant_suffix: "_interactive"
 
-evo_config:
-  interactive_mode: true
+# NOTE: interactive_mode is no longer needed — all runs now support
+# interactive control via the Web UI.  This config variant is kept
+# for backward compatibility of the variant_suffix.

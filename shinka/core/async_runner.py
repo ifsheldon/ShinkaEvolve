@@ -790,6 +790,7 @@ class AsyncEvolutionRunner:
 
         # Check if we're resuming from an existing database
         resuming_run = db_path.exists() and self.db.last_iteration > 0
+        self._is_resuming = resuming_run
 
         # Load bandit state if resuming
         if resuming_run:

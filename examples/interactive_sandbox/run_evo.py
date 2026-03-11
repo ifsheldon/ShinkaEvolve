@@ -271,8 +271,8 @@ db_config = DatabaseConfig(
 )
 
 
-def _create_evo_config(resume: bool) -> EvolutionConfig:
-    """Create evolution config with the given resume mode."""
+def _create_evo_config() -> EvolutionConfig:
+    """Create evolution config."""
     # Resolve path to the mock novelty function next to this script
     _here = Path(__file__).resolve().parent
     novelty_path = str(_here / "novelty.py")
@@ -300,8 +300,6 @@ def _create_evo_config(resume: bool) -> EvolutionConfig:
         init_program_path="initial.py",
         results_dir="results_sandbox",
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
-        interactive_mode=True,  # ← enable interactive tables
-        interaction_mode="manual" if resume else "auto",
         novelty_function_path=novelty_path,  # mock novelty — randomly fires
     )
 
@@ -336,13 +334,16 @@ async def main_async(resume: bool = False):
     print("=" * 72)
     print("  Interactive Sandbox — Mock Evolution (ASYNC)")
     print("  DB:  evolution_db.sqlite")
-    print("  Interactive mode: ON")
+    if resume:
+        print("  Mode: RESUME (will start paused for review)")
+    else:
+        print("  Mode: FRESH RUN")
     print("=" * 72)
     print()
     print("Tip: start the evolve-shell UI in another terminal to interact.")
     print("     You can pause/resume/suggest/merge from the web interface.\n")
 
-    evo_config = _create_evo_config(resume)
+    evo_config = _create_evo_config()
     runner = AsyncInteractiveRunner(
         evo_config=evo_config,
         job_config=job_config,

@@ -56,6 +56,9 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         # Continue signal for manual mode: coordinator waits for this.
         self.continue_signal = asyncio.Event()
 
+        # Step mode: generate one proposal then auto-pause.
+        self._step_mode = False
+
         # Distinct from should_stop so we can distinguish "user clicked
         # stop" from "generations exhausted".
         self._interactive_stop_requested = False
@@ -74,13 +77,26 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             # --- Setup (inherited) ----------------------------------------
             await self._setup_async()
 
-            # --- Init interactive controller ------------------------------
-            if self.evo_config.interactive_mode:
-                db_path = str(Path(self.results_dir) / "programs.sqlite")
-                self.web_controller = WebController(db_path=db_path)
-                logger.info("Interactive async web controller enabled")
+            # --- Always init interactive controller -----------------------
+            db_path = str(Path(self.results_dir) / "programs.sqlite")
+            self.web_controller = WebController(db_path=db_path)
+            logger.info("Interactive async web controller enabled")
 
             await self._verify_database_ready()
+
+            # --- Greenlight gate: wait for user confirmation --------------
+            await self._wait_for_greenlight()
+            if self._interactive_stop_requested:
+                return
+
+            # On resume, start paused so user can review / suggest / merge
+            if self._is_resuming:
+                self.web_controller._paused = True  # noqa: SLF001
+                self.interactive_paused.clear()
+                logger.info(
+                    "Resumed run — starting paused for review. "
+                    "Use Continue or Step in the UI to proceed."
+                )
 
             # --- Spawn concurrent tasks -----------------------------------
             tasks = [
@@ -98,13 +114,12 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     )
                 )
 
-            if self.web_controller:
-                tasks.append(
-                    asyncio.create_task(
-                        self._interactive_command_task(),
-                        name="interactive_commands",
-                    )
+            tasks.append(
+                asyncio.create_task(
+                    self._interactive_command_task(),
+                    name="interactive_commands",
                 )
+            )
 
             # --- Wait for scheduled generations to finish -----------------
             await self.finalization_complete.wait()
@@ -112,13 +127,14 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             # --- Final embedding / meta (same as base class) --------------
             await self._run_final_operations()
 
-            # --- Interactive keep-alive -----------------------------------
-            if self.web_controller and not self._interactive_stop_requested:
+            # --- Keep-alive loop (always active) --------------------------
+            if not self._interactive_stop_requested:
                 self.web_controller.mark_idle()
                 logger.info(
                     "Interactive: scheduled generations done — entering "
                     "async keep-alive mode.  Submit suggestions / merges "
-                    "from the UI, or send a stop command to exit."
+                    "from the UI, increase the target, or send a stop "
+                    "command to exit."
                 )
                 # Cancel the old coordinator (no more auto-proposals needed
                 # unless the keep-alive restarts it)
@@ -127,7 +143,12 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 await asyncio.gather(*tasks, return_exceptions=True)
                 tasks = []  # reset so finally-block doesn't double-cancel
 
-                await self._interactive_keepalive_loop_async()
+                should_reenter = await self._interactive_keepalive_loop_async()
+                if should_reenter:
+                    # Target was increased, reset and re-enter run()
+                    self.cost_limit_reached = False
+                    await self.run()
+                    return  # avoid double mark_completed
 
         except Exception as e:
             logger.error(f"Error in async interactive run: {e}")
@@ -142,6 +163,83 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 self.web_controller.mark_completed()
 
         await self._print_final_summary()
+
+    # --------------------------------------------------------------------- #
+    # Greenlight gate                                                        #
+    # --------------------------------------------------------------------- #
+
+    async def _wait_for_greenlight(self) -> None:
+        """Wait for user to give greenlight via CLI or Web UI."""
+        import threading
+
+        target_gens = self.evo_config.num_generations
+        best = await self.async_db.get_best_program_async()
+        total_programs = await self.async_db.get_total_program_count_async()
+        loop = asyncio.get_event_loop()
+
+        await loop.run_in_executor(
+            None,
+            lambda: self.web_controller.write_status(
+                generation=self.completed_generations,
+                best_score=best.combined_score if best and best.combined_score else 0.0,
+                queued_jobs=0,
+                total_programs=total_programs,
+                target_generations=target_gens,
+                waiting_for_start=True,
+                is_resuming=self._is_resuming,
+            ),
+        )
+
+        greenlight = threading.Event()
+        started_from = "cli"
+
+        def _cli_prompt() -> None:
+            nonlocal started_from
+            try:
+                if self._is_resuming:
+                    input(
+                        f"\n>>> Resuming from generation {self.completed_generations}"
+                        f"/{target_gens}. "
+                        "Press Enter to continue (starts paused for review), "
+                        "or connect via Web UI...\n"
+                    )
+                else:
+                    input(
+                        "\n>>> Press Enter to start generation "
+                        "(or connect via Web UI and click Start)...\n"
+                    )
+                if not greenlight.is_set():
+                    started_from = "cli"
+                    greenlight.set()
+            except EOFError:
+                pass
+
+        cli_thread = threading.Thread(target=_cli_prompt, daemon=True)
+        cli_thread.start()
+
+        while not greenlight.is_set():
+            actions = await loop.run_in_executor(
+                None, self.web_controller.process_commands
+            )
+            for action in actions:
+                await self._handle_interactive_action_async(action)
+
+            if self.web_controller.start_requested:
+                started_from = "web"
+                greenlight.set()
+                break
+            if self.web_controller.stop_requested:
+                self._interactive_stop_requested = True
+                greenlight.set()
+                break
+            await asyncio.sleep(0.5)
+
+        if started_from == "web":
+            logger.info("Started via Web UI")
+        elif self._interactive_stop_requested:
+            logger.info("Stop requested before start")
+        else:
+            logger.info("Started via CLI")
 
     # --------------------------------------------------------------------- #
     # Final operations helper (extracted from base run())                    #
@@ -223,6 +321,15 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     self.continue_signal.set()
                     self.web_controller.clear_continue()
 
+                # Step mode: unpause + allow one submission
+                if self.web_controller.step_requested:
+                    self._step_mode = True
+                    self.web_controller._paused = False  # noqa: SLF001
+                    self.interactive_paused.set()
+                    logger.info(
+                        "Interactive: step mode — will generate 1 node then pause"
+                    )
+
                 if self.web_controller.is_paused:
                     self.interactive_paused.clear()
                 else:
@@ -243,11 +350,9 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         try:
             best = await self.async_db.get_best_program_async()
             total_programs = await self.async_db.get_total_program_count_async()
-            mode = self.evo_config.interaction_mode
             is_idle = (
                 len(self.running_jobs) == 0 and len(self.active_proposal_tasks) == 0
             )
-            is_waiting = mode == "manual" and is_idle
 
             await loop.run_in_executor(
                 None,
@@ -259,8 +364,8 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     queued_jobs=len(self.running_jobs)
                     + len(self.active_proposal_tasks),
                     total_programs=total_programs,
-                    idle=is_idle and not is_waiting,
-                    waiting=is_waiting,
+                    target_generations=self.evo_config.num_generations,
+                    idle=is_idle,
                 ),
             )
         except Exception as e:
@@ -282,6 +387,17 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         action_type = action["action"]
         prompt = action.get("prompt", "")
         patch_type_override = action.get("patch_type", "full")
+
+        if action_type == "set_target":
+            new_target = action["target_generations"]
+            old_target = self.evo_config.num_generations
+            self.evo_config.num_generations = new_target
+            logger.info(
+                "Interactive: target generations changed %d → %d",
+                old_target,
+                new_target,
+            )
+            return
 
         if action_type == "suggest":
             parent_id = action["parent_id"]
@@ -506,19 +622,14 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
     # --------------------------------------------------------------------- #
 
     async def _proposal_coordinator_task(self):
-        """Coordinate proposal generation with interactive mode gating.
+        """Coordinate proposal generation with pause gate.
 
-        Adds three gates on top of the base class logic:
-
-        1. **Pause gate** — blocks when the expert pauses via the UI.
-        2. **Manual mode gate** — waits for ``continue_signal`` before
-           generating a batch.
-        3. **Wait mode gate** — enforces ``interaction_wait_secs`` delay
-           between batches.
+        Blocks when the user pauses via the UI.  Step mode allows one
+        proposal then auto-pauses.
         """
         while not self.should_stop.is_set():
             try:
-                # --- Gate 1: Pause ----------------------------------------
+                # --- Gate: Pause ------------------------------------------
                 if not self.interactive_paused.is_set():
                     logger.debug("Proposal coordinator paused by interactive command")
                     # Wait for either un-pause or stop
@@ -534,45 +645,12 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                         break
                     continue
 
-                # --- Gate 2: Manual mode ----------------------------------
-                if self.web_controller and self.evo_config.interaction_mode == "manual":
-                    if not self.continue_signal.is_set():
-                        # Wait for continue or stop (check every 2s)
-                        cont_task = asyncio.create_task(self.continue_signal.wait())
-                        stop_task = asyncio.create_task(self.should_stop.wait())
-                        done, pending = await asyncio.wait(
-                            [cont_task, stop_task],
-                            timeout=2.0,
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        for p in pending:
-                            p.cancel()
-                        if self.should_stop.is_set():
-                            break
-                        if not self.continue_signal.is_set():
-                            continue
-                    self.continue_signal.clear()
-
-                # --- Gate 3: Wait mode ------------------------------------
-                if self.web_controller and self.evo_config.interaction_mode == "wait":
-                    if not hasattr(self, "_last_submit_time"):
-                        self._last_submit_time = 0.0
-                    now = time.time()
-                    wait_remaining = self.evo_config.interaction_wait_secs - (
-                        now - self._last_submit_time
-                    )
-                    if wait_remaining > 0:
-                        await asyncio.sleep(min(wait_remaining, 2.0))
-                        continue
-                    self._last_submit_time = time.time()
-
                 # --- Base class coordinator logic -------------------------
                 if self._is_system_stuck():
                     recovery_success = await self._handle_stuck_system()
                     if not recovery_success:
                         break
 
-                available_slots = self.max_evaluation_jobs - len(self.running_jobs)
                 proposals_remaining = max(
                     0,
                     self.evo_config.num_generations - self.next_generation_to_submit,
@@ -608,6 +686,10 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 )
 
                 if proposals_needed > 0 and should_generate_proposals:
+                    # Step mode: only submit one proposal then auto-pause
+                    if self._step_mode:
+                        proposals_needed = 1
+
                     if self.verbose:
                         logger.info(
                             f"Starting {proposals_needed} new proposals. "
@@ -620,6 +702,13 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     await self._start_proposals(proposals_needed)
                     self._record_progress()
 
+                    # Step mode: auto-pause after submission
+                    if self._step_mode:
+                        self._step_mode = False
+                        self.interactive_paused.clear()
+                        self.web_controller._paused = True  # noqa: SLF001
+                        logger.info("Interactive: step complete, auto-pausing")
+
                 await self._cleanup_completed_proposal_tasks()
                 await self._wait_for_slot_or_stop(timeout=5.0)
 
@@ -631,11 +720,14 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
     # Keep-alive loop                                                        #
     # --------------------------------------------------------------------- #
 
-    async def _interactive_keepalive_loop_async(self):
+    async def _interactive_keepalive_loop_async(self) -> bool:
         """Keep the runner alive after scheduled generations for interactive use.
 
         Restarts the command polling and job monitoring tasks, then waits
-        until the expert sends a STOP command.
+        until the expert sends a STOP command or increases the target.
+
+        Returns True if the target was increased (caller should re-enter
+        the main generation loop), False otherwise.
         """
         logger.info("Interactive: async keep-alive started")
 
@@ -643,6 +735,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         self.should_stop.clear()
         self.finalization_complete.clear()
         self._interactive_stop_requested = False
+        should_reenter = False
 
         cmd_task = asyncio.create_task(
             self._interactive_command_task(), name="keepalive_commands"
@@ -652,24 +745,36 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         )
 
         try:
-            # Block until stop is requested
-            await self.should_stop.wait()
-
-            # Drain remaining running jobs
-            logger.info(
-                "Interactive keep-alive: stop requested, draining %d running jobs...",
-                len(self.running_jobs),
-            )
-            drain_timeout = 300.0  # 5 min max wait
-            drain_start = time.time()
-            while self.running_jobs:
-                if time.time() - drain_start > drain_timeout:
-                    logger.warning(
-                        "Keep-alive drain timed out, %d jobs still running",
-                        len(self.running_jobs),
+            # Poll until stop is requested or target increases
+            while not self.should_stop.is_set():
+                # Check if target was increased beyond completed
+                if self.evo_config.num_generations > self.completed_generations:
+                    logger.info(
+                        "Interactive keep-alive: target increased to %d "
+                        "(completed %d), re-entering generation loop",
+                        self.evo_config.num_generations,
+                        self.completed_generations,
                     )
+                    should_reenter = True
                     break
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.0)
+
+            if not should_reenter:
+                # Drain remaining running jobs
+                logger.info(
+                    "Interactive keep-alive: stop requested, draining %d running jobs...",
+                    len(self.running_jobs),
+                )
+                drain_timeout = 300.0  # 5 min max wait
+                drain_start = time.time()
+                while self.running_jobs:
+                    if time.time() - drain_start > drain_timeout:
+                        logger.warning(
+                            "Keep-alive drain timed out, %d jobs still running",
+                            len(self.running_jobs),
+                        )
+                        break
+                    await asyncio.sleep(1)
 
         except asyncio.CancelledError:
             logger.info("Interactive keep-alive cancelled")
@@ -678,3 +783,5 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             monitor_task.cancel()
             await asyncio.gather(cmd_task, monitor_task, return_exceptions=True)
             logger.info("Interactive: async keep-alive ended")
+
+        return should_reenter
