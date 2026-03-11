@@ -98,7 +98,9 @@ def _row_to_program_data(row: sqlite3.Row) -> ProgramData:
 # ---------------------------------------------------------------------------
 
 
-def backfill(db_path: Path, *, dry_run: bool = False, force: bool = False) -> Dict[str, int]:
+def backfill(
+    db_path: Path, *, dry_run: bool = False, force: bool = False
+) -> Dict[str, int]:
     """Run default novelty detection on all un-classified programs.
 
     When *force* is True, re-classify every program (overwriting existing
@@ -156,20 +158,20 @@ def backfill(db_path: Path, *, dry_run: bool = False, force: bool = False) -> Di
         for insp_id in list(archive_ids) + list(top_k_ids):
             if insp_id not in seen and insp_id in programs_by_id:
                 seen.add(insp_id)
-                inspiration_data.append(
-                    _row_to_program_data(programs_by_id[insp_id])
-                )
+                inspiration_data.append(_row_to_program_data(programs_by_id[insp_id]))
 
         level, display_data = default_detect_novelty(
             program_data, parent_data, inspiration_data
         )
 
         if level != NoveltyLevel.NONE:
-            updates.append((
-                level.value,
-                json.dumps(display_data) if display_data else None,
-                row["id"],
-            ))
+            updates.append(
+                (
+                    level.value,
+                    json.dumps(display_data) if display_data else None,
+                    row["id"],
+                )
+            )
             stats[level.value] += 1
         else:
             # In force mode, explicitly reset previously-novel programs to "none"

@@ -80,14 +80,16 @@ class WebController:
 
         for cmd in commands:
             self.interactive_db.update_command_status(
-                cmd.id, CommandStatus.PROCESSING.value  # type: ignore[arg-type]
+                cmd.id,
+                CommandStatus.PROCESSING.value,  # type: ignore[arg-type]
             )
             try:
                 action = self._handle_command(cmd)
                 if action is not None:
                     actions.append(action)
                 self.interactive_db.update_command_status(
-                    cmd.id, CommandStatus.COMPLETED.value  # type: ignore[arg-type]
+                    cmd.id,
+                    CommandStatus.COMPLETED.value,  # type: ignore[arg-type]
                 )
             except Exception as exc:
                 logger.error("Interactive command %s failed: %s", cmd.id, exc)
@@ -178,7 +180,9 @@ class WebController:
                 raise ValueError("suggest command requires parent_id")
             logger.info(
                 "Interactive: suggest — parent=%s patch_type=%s prompt=%.60s…",
-                parent_id, patch_type, prompt,
+                parent_id,
+                patch_type,
+                prompt,
             )
             return {
                 "action": "suggest",
@@ -197,7 +201,9 @@ class WebController:
                 raise ValueError("merge command requires at least 2 parent_ids")
             logger.info(
                 "Interactive: merge — parents=%s patch_type=%s prompt=%.60s…",
-                parent_ids, patch_type, prompt,
+                parent_ids,
+                patch_type,
+                prompt,
             )
             return {
                 "action": "merge",

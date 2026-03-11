@@ -84,9 +84,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
 
             # --- Spawn concurrent tasks -----------------------------------
             tasks = [
-                asyncio.create_task(
-                    self._job_monitor_task(), name="job_monitor"
-                ),
+                asyncio.create_task(self._job_monitor_task(), name="job_monitor"),
                 asyncio.create_task(
                     self._proposal_coordinator_task(),
                     name="proposal_coordinator",
@@ -115,10 +113,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             await self._run_final_operations()
 
             # --- Interactive keep-alive -----------------------------------
-            if (
-                self.web_controller
-                and not self._interactive_stop_requested
-            ):
+            if self.web_controller and not self._interactive_stop_requested:
                 self.web_controller.mark_idle()
                 logger.info(
                     "Interactive: scheduled generations done — entering "
@@ -155,9 +150,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
     async def _run_final_operations(self):
         """Embedding recomputation + final meta summary."""
         if self.verbose:
-            logger.info(
-                "Performing final embedding recomputation and meta summary..."
-            )
+            logger.info("Performing final embedding recomputation and meta summary...")
 
         # Final embedding recomputation
         if self.embedding_client:
@@ -167,9 +160,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     timeout=120.0,
                 )
             except asyncio.TimeoutError:
-                logger.warning(
-                    "Final embedding recomputation timed out after 2 min"
-                )
+                logger.warning("Final embedding recomputation timed out after 2 min")
             except Exception as e:
                 logger.error(f"Error in final embedding recomputation: {e}")
 
@@ -254,8 +245,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             total_programs = await self.async_db.get_total_program_count_async()
             mode = self.evo_config.interaction_mode
             is_idle = (
-                len(self.running_jobs) == 0
-                and len(self.active_proposal_tasks) == 0
+                len(self.running_jobs) == 0 and len(self.active_proposal_tasks) == 0
             )
             is_waiting = mode == "manual" and is_idle
 
@@ -264,9 +254,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 lambda: self.web_controller.write_status(
                     generation=self.completed_generations,
                     best_score=(
-                        best.combined_score
-                        if best and best.combined_score
-                        else 0.0
+                        best.combined_score if best and best.combined_score else 0.0
                     ),
                     queued_jobs=len(self.running_jobs)
                     + len(self.active_proposal_tasks),
@@ -299,16 +287,15 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             parent_id = action["parent_id"]
             parent_program = await self.async_db.get_async(parent_id)
             if parent_program is None:
-                logger.error(
-                    "Interactive suggest: parent %s not found", parent_id
-                )
+                logger.error("Interactive suggest: parent %s not found", parent_id)
                 return
-            archive_programs, top_k_programs = (
-                await self.async_db.sample_inspirations_for_parent_async(
-                    parent_program,
-                    self.db_config.num_archive_inspirations,
-                    self.db_config.num_top_k_inspirations,
-                )
+            (
+                archive_programs,
+                top_k_programs,
+            ) = await self.async_db.sample_inspirations_for_parent_async(
+                parent_program,
+                self.db_config.num_archive_inspirations,
+                self.db_config.num_top_k_inspirations,
             )
 
         elif action_type == "merge":
@@ -320,8 +307,8 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     parent_ids[0],
                 )
                 return
-            archive_programs = (
-                await self.async_db.get_programs_by_ids_async(parent_ids[1:])
+            archive_programs = await self.async_db.get_programs_by_ids_async(
+                parent_ids[1:]
             )
             top_k_programs: List[Program] = []
             patch_type_override = "cross"
@@ -406,18 +393,14 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             meta_recs = None
             if self.meta_summarizer:
                 if self.evo_config.sample_single_meta_rec:
-                    meta_recs = (
-                        self.meta_summarizer.get_sampled_recommendation()
-                    )
+                    meta_recs = self.meta_summarizer.get_sampled_recommendation()
                 else:
                     meta_recs, _, _ = self.meta_summarizer.get_current()
 
             # --- LLM model selection (transparent pass-through) -----------
             model_sample_probs, model_posterior = None, None
             if self.llm_selection is not None:
-                model_sample_probs, model_posterior = (
-                    self.llm_selection.select_llm()
-                )
+                model_sample_probs, model_posterior = self.llm_selection.select_llm()
 
             # --- Run patch with interactive overrides ---------------------
             patch_result = await self._run_patch_async(
@@ -455,8 +438,8 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 meta_patch_data["human_prompt"] = user_suggestions
 
             # --- Get code embedding ---------------------------------------
-            code_embedding, embed_cost = (
-                await self._get_code_embedding_async(exec_fname)
+            code_embedding, embed_cost = await self._get_code_embedding_async(
+                exec_fname
             )
 
             # --- Submit for evaluation (skip novelty check) ---------------
@@ -503,8 +486,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             self.slot_available.set()
 
             logger.info(
-                "Interactive %s: submitted gen %d for eval "
-                "(parent=%s, cost=$%.4f)",
+                "Interactive %s: submitted gen %d for eval (parent=%s, cost=$%.4f)",
                 action_type,
                 generation,
                 parent_program.id,
@@ -513,9 +495,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             return running_job
 
         except Exception as e:
-            logger.error(
-                "Error in interactive proposal gen %d: %s", generation, e
-            )
+            logger.error("Error in interactive proposal gen %d: %s", generation, e)
             return None
         finally:
             # Remove from active proposals regardless of outcome
@@ -540,13 +520,9 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             try:
                 # --- Gate 1: Pause ----------------------------------------
                 if not self.interactive_paused.is_set():
-                    logger.debug(
-                        "Proposal coordinator paused by interactive command"
-                    )
+                    logger.debug("Proposal coordinator paused by interactive command")
                     # Wait for either un-pause or stop
-                    unpause_task = asyncio.create_task(
-                        self.interactive_paused.wait()
-                    )
+                    unpause_task = asyncio.create_task(self.interactive_paused.wait())
                     stop_task = asyncio.create_task(self.should_stop.wait())
                     done, pending = await asyncio.wait(
                         [unpause_task, stop_task],
@@ -559,18 +535,11 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     continue
 
                 # --- Gate 2: Manual mode ----------------------------------
-                if (
-                    self.web_controller
-                    and self.evo_config.interaction_mode == "manual"
-                ):
+                if self.web_controller and self.evo_config.interaction_mode == "manual":
                     if not self.continue_signal.is_set():
                         # Wait for continue or stop (check every 2s)
-                        cont_task = asyncio.create_task(
-                            self.continue_signal.wait()
-                        )
-                        stop_task = asyncio.create_task(
-                            self.should_stop.wait()
-                        )
+                        cont_task = asyncio.create_task(self.continue_signal.wait())
+                        stop_task = asyncio.create_task(self.should_stop.wait())
                         done, pending = await asyncio.wait(
                             [cont_task, stop_task],
                             timeout=2.0,
@@ -585,16 +554,12 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     self.continue_signal.clear()
 
                 # --- Gate 3: Wait mode ------------------------------------
-                if (
-                    self.web_controller
-                    and self.evo_config.interaction_mode == "wait"
-                ):
+                if self.web_controller and self.evo_config.interaction_mode == "wait":
                     if not hasattr(self, "_last_submit_time"):
                         self._last_submit_time = 0.0
                     now = time.time()
-                    wait_remaining = (
-                        self.evo_config.interaction_wait_secs
-                        - (now - self._last_submit_time)
+                    wait_remaining = self.evo_config.interaction_wait_secs - (
+                        now - self._last_submit_time
                     )
                     if wait_remaining > 0:
                         await asyncio.sleep(min(wait_remaining, 2.0))
@@ -607,13 +572,10 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     if not recovery_success:
                         break
 
-                available_slots = self.max_evaluation_jobs - len(
-                    self.running_jobs
-                )
+                available_slots = self.max_evaluation_jobs - len(self.running_jobs)
                 proposals_remaining = max(
                     0,
-                    self.evo_config.num_generations
-                    - self.next_generation_to_submit,
+                    self.evo_config.num_generations - self.next_generation_to_submit,
                 )
 
                 should_generate_proposals = not self.cost_limit_reached
@@ -626,9 +588,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                         should_generate_proposals = False
                         self.cost_limit_reached = True
                         if self.verbose:
-                            in_flight_cost = (
-                                committed_cost - self.total_api_cost
-                            )
+                            in_flight_cost = committed_cost - self.total_api_cost
                             logger.info(
                                 f"Cost budget reached: "
                                 f"actual=${self.total_api_cost:.4f} + "
@@ -644,8 +604,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 proposals_needed = min(
                     max(0, pipeline_target - pipeline_capacity),
                     proposals_remaining,
-                    self.max_proposal_jobs
-                    - len(self.active_proposal_tasks),
+                    self.max_proposal_jobs - len(self.active_proposal_tasks),
                 )
 
                 if proposals_needed > 0 and should_generate_proposals:
@@ -698,8 +657,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
 
             # Drain remaining running jobs
             logger.info(
-                "Interactive keep-alive: stop requested, draining "
-                "%d running jobs...",
+                "Interactive keep-alive: stop requested, draining %d running jobs...",
                 len(self.running_jobs),
             )
             drain_timeout = 300.0  # 5 min max wait
@@ -707,8 +665,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             while self.running_jobs:
                 if time.time() - drain_start > drain_timeout:
                     logger.warning(
-                        "Keep-alive drain timed out, "
-                        "%d jobs still running",
+                        "Keep-alive drain timed out, %d jobs still running",
                         len(self.running_jobs),
                     )
                     break
@@ -719,7 +676,5 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         finally:
             cmd_task.cancel()
             monitor_task.cancel()
-            await asyncio.gather(
-                cmd_task, monitor_task, return_exceptions=True
-            )
+            await asyncio.gather(cmd_task, monitor_task, return_exceptions=True)
             logger.info("Interactive: async keep-alive ended")

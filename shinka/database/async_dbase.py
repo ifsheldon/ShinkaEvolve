@@ -637,9 +637,7 @@ class AsyncProgramDatabase:
             logger.error(f"Error in async get: {e}")
             raise
 
-    async def get_programs_by_ids_async(
-        self, program_ids: List[str]
-    ) -> List[Program]:
+    async def get_programs_by_ids_async(self, program_ids: List[str]) -> List[Program]:
         """Async version of get_programs_by_ids for interactive operations."""
         op_id = self._debug_track_start(
             "get_programs_by_ids_async", count=len(program_ids)
@@ -703,9 +701,7 @@ class AsyncProgramDatabase:
                     raise
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor, sample_insps_thread_safe
-            )
+            result = await loop.run_in_executor(self.executor, sample_insps_thread_safe)
             self._debug_track_end(op_id, success=True)
             return result
         except Exception as e:

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 class CommandType(str, Enum):
     PAUSE = "pause"
     RESUME = "resume"
@@ -43,10 +44,10 @@ class CommandStatus(str, Enum):
 class RunState(str, Enum):
     RUNNING = "running"
     PAUSED = "paused"
-    IDLE = "idle"           # generations done, still accepting interactive commands
+    IDLE = "idle"  # generations done, still accepting interactive commands
     COMPLETED = "completed"
     STOPPED = "stopped"
-    WAITING = "waiting"   # manual mode: waiting for human to click Continue
+    WAITING = "waiting"  # manual mode: waiting for human to click Continue
     ERROR = "error"
 
 
@@ -74,6 +75,7 @@ class InteractiveStatus:
 # ---------------------------------------------------------------------------
 # Database helper
 # ---------------------------------------------------------------------------
+
 
 class InteractiveDatabase:
     """Manages the interactive command/status tables within the evolution SQLite DB."""

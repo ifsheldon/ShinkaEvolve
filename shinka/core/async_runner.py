@@ -3079,10 +3079,14 @@ class AsyncEvolutionRunner:
                 try:
                     parent_prog_for_novelty = None
                     if job.parent_id:
-                        parent_prog_for_novelty = await self.async_db.get_async(job.parent_id)
+                        parent_prog_for_novelty = await self.async_db.get_async(
+                            job.parent_id
+                        )
 
                     inspiration_programs = []
-                    for insp_id in (job.archive_insp_ids or []) + (job.top_k_insp_ids or []):
+                    for insp_id in (job.archive_insp_ids or []) + (
+                        job.top_k_insp_ids or []
+                    ):
                         insp = await self.async_db.get_async(insp_id)
                         if insp:
                             inspiration_programs.append(insp)

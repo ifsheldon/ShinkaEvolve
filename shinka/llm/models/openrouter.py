@@ -1,7 +1,7 @@
 import backoff
 import openai
 from .result import QueryResult
-from .pricing import get_openrouter_model_price 
+from .pricing import get_openrouter_model_price
 import logging
 import os
 
@@ -14,6 +14,7 @@ def backoff_handler(details):
         logger.warning(
             f"OpenRouter Query - Retry {details['tries']} error: {exc}. Wait {details['wait']:0.1f}s..."
         )
+
 
 @backoff.on_exception(
     backoff.expo,
@@ -37,10 +38,10 @@ def query_openrouter(
     model_posteriors=None,
     **kwargs,
 ) -> QueryResult:
-    
-    unsupported_params = ['max_output_tokens', 'reasoning', 'thinking', 'extra_body']
+
+    unsupported_params = ["max_output_tokens", "reasoning", "thinking", "extra_body"]
     filtered_kwargs = {k: v for k, v in kwargs.items() if k not in unsupported_params}
-    
+
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
 
     if output_model is None:
@@ -62,15 +63,17 @@ def query_openrouter(
         new_msg_history.append({"role": "assistant", "content": content})
 
     try:
-        input_price, output_price = get_openrouter_model_price(model, os.getenv("OPENROUTER_API_KEY"))
+        input_price, output_price = get_openrouter_model_price(
+            model, os.getenv("OPENROUTER_API_KEY")
+        )
     except Exception as e:
         logger.error(f"CRITICAL: Failed to get pricing for {model} after retries: {e}")
-        
-        input_price, output_price = 1.0 / 1_000_000, 1.0 / 1_000_000 
+
+        input_price, output_price = 1.0 / 1_000_000, 1.0 / 1_000_000
 
     input_tokens = response.usage.prompt_tokens
     output_tokens = response.usage.completion_tokens
-    
+
     input_cost = input_price * input_tokens
     output_cost = output_price * output_tokens
     total_cost = input_cost + output_cost

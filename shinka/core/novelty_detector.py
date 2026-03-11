@@ -201,9 +201,7 @@ class NoveltyDetector:
         insp_data = [self._to_program_data(i) for i in inspirations]
 
         try:
-            level, display_data = self._novelty_fn(
-                prog_data, parent_data, insp_data
-            )
+            level, display_data = self._novelty_fn(prog_data, parent_data, insp_data)
             return NoveltyResult(level=level, display_data=display_data)
         except Exception as e:
             logger.error(f"Novelty function raised exception: {e}")
@@ -237,15 +235,10 @@ class NoveltyDetector:
             current_mtime = path.stat().st_mtime
 
             # Skip reload if file hasn't changed
-            if (
-                self._cached_module is not None
-                and current_mtime == self._cached_mtime
-            ):
+            if self._cached_module is not None and current_mtime == self._cached_mtime:
                 return True
 
-            spec = importlib.util.spec_from_file_location(
-                "user_novelty", str(path)
-            )
+            spec = importlib.util.spec_from_file_location("user_novelty", str(path))
             if spec is None or spec.loader is None:
                 raise ImportError(f"Cannot create module spec from {path}")
 
@@ -258,9 +251,7 @@ class NoveltyDetector:
                     f"Function '{self._function_name}' not found in {path}"
                 )
             if not callable(fn):
-                raise TypeError(
-                    f"'{self._function_name}' in {path} is not callable"
-                )
+                raise TypeError(f"'{self._function_name}' in {path} is not callable")
 
             # Validate with dummy data
             self._validate_function(fn)
@@ -273,9 +264,7 @@ class NoveltyDetector:
             return True
 
         except Exception as e:
-            self._set_error(
-                f"Failed to load novelty function from {path}: {e}"
-            )
+            self._set_error(f"Failed to load novelty function from {path}: {e}")
             self._novelty_fn = default_detect_novelty
             return False
 

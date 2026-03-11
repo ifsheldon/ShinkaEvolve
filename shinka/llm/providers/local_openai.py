@@ -20,7 +20,9 @@ def backoff_handler(details):
         )
 
 
-def _extract_costs(model: str, in_tokens: int, all_out_tokens: int) -> tuple[float, float]:
+def _extract_costs(
+    model: str, in_tokens: int, all_out_tokens: int
+) -> tuple[float, float]:
     if model_exists(model):
         return calculate_cost(model, in_tokens, all_out_tokens)
     return 0.0, 0.0

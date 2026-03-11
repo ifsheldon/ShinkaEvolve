@@ -62,11 +62,11 @@ def detect_novelty(
     if gain_pct >= 0.30:
         return NoveltyLevel.HIGH, {
             **display,
-            "reason": f"Major score breakthrough ({gain_pct*100:.1f}% gain)",
+            "reason": f"Major score breakthrough ({gain_pct * 100:.1f}% gain)",
         }
     if gain_pct >= 0.15:
         return NoveltyLevel.MODERATE, {
             **display,
-            "reason": f"Significant improvement ({gain_pct*100:.1f}% gain)",
+            "reason": f"Significant improvement ({gain_pct * 100:.1f}% gain)",
         }
     return NoveltyLevel.NONE, display

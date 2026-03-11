@@ -214,7 +214,9 @@ def main(program_path: str, results_dir: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Julia prime-counting program")
+    parser = argparse.ArgumentParser(
+        description="Evaluate Julia prime-counting program"
+    )
     parser.add_argument(
         "--program_path",
         type=str,

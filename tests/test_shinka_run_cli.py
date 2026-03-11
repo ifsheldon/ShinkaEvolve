@@ -12,15 +12,11 @@ def _make_task_dir(tmp_path: Path, *, include_evaluate: bool = True) -> Path:
     task_dir.mkdir()
     if include_evaluate:
         (task_dir / "evaluate.py").write_text(
-            "def main(program_path: str, results_dir: str):\n"
-            "    pass\n",
+            "def main(program_path: str, results_dir: str):\n    pass\n",
             encoding="utf-8",
         )
     (task_dir / "initial.py").write_text(
-        "# EVOLVE-BLOCK-START\n"
-        "def run():\n"
-        "    return 0\n"
-        "# EVOLVE-BLOCK-END\n",
+        "# EVOLVE-BLOCK-START\ndef run():\n    return 0\n# EVOLVE-BLOCK-END\n",
         encoding="utf-8",
     )
     return task_dir

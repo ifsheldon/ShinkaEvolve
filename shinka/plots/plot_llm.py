@@ -23,9 +23,9 @@ def plot_cumulative_llm_calls(
 
     # Extract model names for all rows
     model_names = df["llm_result"].apply(
-        lambda x: x.get("model_name")
-        if isinstance(x, dict) and "model_name" in x
-        else None
+        lambda x: (
+            x.get("model_name") if isinstance(x, dict) and "model_name" in x else None
+        )
     )
 
     # Defensive extraction of costs, treat missing as 0

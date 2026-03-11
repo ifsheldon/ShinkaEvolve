@@ -12,4 +12,6 @@ def compute(seed: int = 42) -> float:
 def run_experiment(seed: int = 1) -> float:
     """Entry point called by the evaluator."""
     return compute(seed)
+
+
 # EVOLVE-BLOCK-END
