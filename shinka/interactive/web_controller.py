@@ -114,10 +114,10 @@ class WebController:
         """Persist current run status so the web backend can read it."""
         if waiting:
             state = RunState.WAITING
-        elif idle:
-            state = RunState.IDLE
         elif self._paused:
             state = RunState.PAUSED
+        elif idle:
+            state = RunState.IDLE
         else:
             state = RunState.RUNNING
         if self._stop_requested:
