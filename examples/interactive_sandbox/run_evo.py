@@ -273,6 +273,10 @@ db_config = DatabaseConfig(
 
 def _create_evo_config(resume: bool) -> EvolutionConfig:
     """Create evolution config with the given resume mode."""
+    # Resolve path to the mock novelty function next to this script
+    _here = Path(__file__).resolve().parent
+    novelty_path = str(_here / "novelty.py")
+
     return EvolutionConfig(
         task_sys_msg=(
             "You are evolving a simple Python function that returns a number. "
@@ -298,6 +302,7 @@ def _create_evo_config(resume: bool) -> EvolutionConfig:
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
         interactive_mode=True,  # ← enable interactive tables
         interaction_mode="manual" if resume else "auto",
+        novelty_function_path=novelty_path,  # mock novelty — randomly fires
     )
 
 
