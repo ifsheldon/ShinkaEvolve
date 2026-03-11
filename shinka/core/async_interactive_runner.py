@@ -215,7 +215,6 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 actions = await loop.run_in_executor(
                     None,
                     self.web_controller.process_commands,
-                    self.db,
                 )
 
                 for action in actions:

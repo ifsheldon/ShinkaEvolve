@@ -8,10 +8,8 @@ back to ``interactive_status``.
 from __future__ import annotations
 
 import logging
-import time
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import List, Optional
 
-from shinka.database import Program
 from shinka.interactive.interactive_db import (
     CommandStatus,
     CommandType,
@@ -20,9 +18,6 @@ from shinka.interactive.interactive_db import (
     InteractiveStatus,
     RunState,
 )
-
-if TYPE_CHECKING:
-    from shinka.database import ProgramDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +56,7 @@ class WebController:
         """Reset the continue flag after a job has been submitted."""
         self._continue_requested = False
 
-    def process_commands(
-        self,
-        program_db: "ProgramDatabase",
-    ) -> List[dict]:
+    def process_commands(self) -> List[dict]:
         """Drain pending commands and return actions for the runner.
 
         Returns a list of action dicts. Currently supported actions:
@@ -75,6 +67,13 @@ class WebController:
               "patch_type": str, "command_id": int}``
 
         Pause / resume / stop are handled internally (they flip flags).
+
+        .. note::
+
+           Parent-existence validation is intentionally deferred to the
+           caller (the runner's action handler) so that this method never
+           touches the main ``ProgramDatabase`` connection — which may
+           belong to a different thread in the async runner.
         """
         commands = self.interactive_db.poll_pending_commands()
         actions: List[dict] = []
@@ -84,7 +83,7 @@ class WebController:
                 cmd.id, CommandStatus.PROCESSING.value  # type: ignore[arg-type]
             )
             try:
-                action = self._handle_command(cmd, program_db)
+                action = self._handle_command(cmd)
                 if action is not None:
                     actions.append(action)
                 self.interactive_db.update_command_status(
@@ -147,9 +146,7 @@ class WebController:
     # Internal
     # ------------------------------------------------------------------
 
-    def _handle_command(
-        self, cmd: InteractiveCommand, program_db: "ProgramDatabase"
-    ) -> Optional[dict]:
+    def _handle_command(self, cmd: InteractiveCommand) -> Optional[dict]:
         ct = cmd.command_type
 
         if ct == CommandType.PAUSE.value:
@@ -179,10 +176,6 @@ class WebController:
             patch_type = payload.get("patch_type", "full")
             if not parent_id:
                 raise ValueError("suggest command requires parent_id")
-            # Verify parent exists
-            parent = program_db.get(parent_id)
-            if parent is None:
-                raise ValueError(f"parent program {parent_id} not found")
             logger.info(
                 "Interactive: suggest — parent=%s patch_type=%s prompt=%.60s…",
                 parent_id, patch_type, prompt,
@@ -202,10 +195,6 @@ class WebController:
             patch_type = payload.get("patch_type", "cross")
             if len(parent_ids) < 2:
                 raise ValueError("merge command requires at least 2 parent_ids")
-            # Verify all parents exist
-            for pid in parent_ids:
-                if program_db.get(pid) is None:
-                    raise ValueError(f"program {pid} not found for merge")
             logger.info(
                 "Interactive: merge — parents=%s patch_type=%s prompt=%.60s…",
                 parent_ids, patch_type, prompt,

@@ -623,7 +623,7 @@ class EvolutionRunner:
             ):
                 # --- Interactive: process commands and update status ---
                 if self.web_controller is not None:
-                    interactive_actions = self.web_controller.process_commands(self.db)
+                    interactive_actions = self.web_controller.process_commands()
                     for action in interactive_actions:
                         self._handle_interactive_action(action)
 
@@ -1193,7 +1193,7 @@ class EvolutionRunner:
 
         while True:
             # Process any pending commands
-            interactive_actions = self.web_controller.process_commands(self.db)
+            interactive_actions = self.web_controller.process_commands()
             for action in interactive_actions:
                 self._handle_interactive_action(action)
 
