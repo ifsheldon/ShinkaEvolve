@@ -259,6 +259,12 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
             for action in actions:
                 await self._handle_interactive_action_async(action)
 
+            await self._write_interactive_status_update(
+                loop=loop,
+                writer=self.web_controller.write_generation_heartbeat,
+                context="writing waiting-for-start heartbeat",
+            )
+
             if self.web_controller.start_requested:
                 started_from = "web"
                 greenlight.set()

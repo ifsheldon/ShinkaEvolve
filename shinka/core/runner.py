@@ -595,6 +595,7 @@ class EvolutionRunner:
         while not greenlight.is_set():
             # Poll for web START command
             self.web_controller.process_commands()
+            self.web_controller.write_generation_heartbeat()
             if self.web_controller.start_requested:
                 started_from = "web"
                 greenlight.set()

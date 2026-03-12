@@ -163,6 +163,7 @@ class WebController:
             state = RunState.IDLE
         else:
             state = RunState.RUNNING
+        self.interactive_db.write_heartbeat()
         self.interactive_db.write_status(
             InteractiveStatus(
                 run_state=state.value,
@@ -177,15 +178,21 @@ class WebController:
 
     def mark_idle(self) -> None:
         """Mark the run as idle (generations done, still accepting commands)."""
+        self.interactive_db.write_heartbeat()
         self.interactive_db.write_status(
             InteractiveStatus(run_state=RunState.IDLE.value)
         )
 
     def mark_completed(self) -> None:
         """Mark the run as completed in the status table."""
+        self.interactive_db.write_heartbeat()
         self.interactive_db.write_status(
             InteractiveStatus(run_state=RunState.COMPLETED.value)
         )
+
+    def write_generation_heartbeat(self) -> None:
+        """Refresh generation-backend liveness without changing run status."""
+        self.interactive_db.write_heartbeat()
 
     # ------------------------------------------------------------------
     # Internal

@@ -266,6 +266,20 @@ class InteractiveDatabase:
         finally:
             conn.close()
 
+    def write_heartbeat(self, key: str = "generation_backend_heartbeat") -> None:
+        """Upsert a liveness heartbeat timestamp for the generation backend."""
+        conn = self._connect()
+        now = time.time()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO interactive_status (key, value, updated_at) "
+                "VALUES (?, ?, ?)",
+                (key, "{}", now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def read_status(self) -> Optional[InteractiveStatus]:
         """Read the current run status (called by backend)."""
         conn = self._connect()
@@ -286,5 +300,21 @@ class InteractiveDatabase:
                 is_resuming=data.get("is_resuming", False),
                 updated_at=row["updated_at"],
             )
+        finally:
+            conn.close()
+
+    def read_heartbeat(
+        self, key: str = "generation_backend_heartbeat"
+    ) -> Optional[float]:
+        """Read a liveness heartbeat timestamp."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT updated_at FROM interactive_status WHERE key = ?",
+                (key,),
+            ).fetchone()
+            if not row:
+                return None
+            return float(row["updated_at"])
         finally:
             conn.close()
