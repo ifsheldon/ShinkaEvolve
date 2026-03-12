@@ -93,7 +93,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
 
             # On resume, start paused so user can review / suggest / merge
             if self._is_resuming:
-                self.web_controller._paused = True  # noqa: SLF001
+                self.web_controller.pause()
                 self.interactive_paused.clear()
                 logger.info(
                     "Resumed run — starting paused for review. "
@@ -345,7 +345,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 # Step mode: unpause + allow one submission
                 if self.web_controller.step_requested:
                     self._step_mode = True
-                    self.web_controller._paused = False  # noqa: SLF001
+                    self.web_controller.resume()
                     self.interactive_paused.set()
                     logger.info(
                         "Interactive: step mode — will generate 1 node then pause"
@@ -727,7 +727,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     if self._step_mode:
                         self._step_mode = False
                         self.interactive_paused.clear()
-                        self.web_controller._paused = True  # noqa: SLF001
+                        self.web_controller.pause()
                         logger.info("Interactive: step complete, auto-pausing")
 
                 await self._cleanup_completed_proposal_tasks()

@@ -638,7 +638,7 @@ class EvolutionRunner:
 
         # On resume, start paused so user can review / suggest / merge first
         if self._is_resuming:
-            self.web_controller._paused = True  # noqa: SLF001
+            self.web_controller.pause()
             logger.info(
                 "Resumed run — starting paused for review. "
                 "Use Continue or Step in the UI to proceed."
@@ -789,7 +789,7 @@ class EvolutionRunner:
             # Handle step request: unpause + allow one submission
             if self.web_controller.step_requested:
                 self._step_mode = True
-                self.web_controller._paused = False  # noqa: SLF001
+                self.web_controller.resume()
                 logger.info("Interactive: step mode — will generate 1 node then pause")
 
             # Check for stop request
@@ -831,7 +831,7 @@ class EvolutionRunner:
                 # Step mode: auto-pause after one job completes
                 if self._step_mode:
                     self._step_mode = False
-                    self.web_controller._paused = True  # noqa: SLF001
+                    self.web_controller.pause()
                     logger.info("Interactive: step complete, auto-pausing")
 
                 # Periodically save bandit state (every 5 generations)

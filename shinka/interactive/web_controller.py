@@ -70,6 +70,14 @@ class WebController:
         """Reset the continue flag after a job has been submitted."""
         self._continue_requested = False
 
+    def pause(self) -> None:
+        """Pause the runner (block new job submissions)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume the runner (allow new job submissions)."""
+        self._paused = False
+
     def process_commands(self) -> List[dict]:
         """Drain pending commands and return actions for the runner.
 
