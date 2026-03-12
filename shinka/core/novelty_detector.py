@@ -326,8 +326,12 @@ class NoveltyDetector:
             err_path = os.path.join(self._results_dir, "novelty_error.json")
             with open(err_path, "w") as f:
                 json.dump({"error": msg}, f)
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "Could not write novelty error file %s: %s",
+                os.path.join(self._results_dir, "novelty_error.json"),
+                exc,
+            )
 
     def _remove_error_file(self) -> None:
         if not self._results_dir:
@@ -336,8 +340,12 @@ class NoveltyDetector:
             err_path = os.path.join(self._results_dir, "novelty_error.json")
             if os.path.exists(err_path):
                 os.remove(err_path)
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "Could not remove novelty error file %s: %s",
+                os.path.join(self._results_dir, "novelty_error.json"),
+                exc,
+            )
 
     @staticmethod
     def _to_program_data(program: Program) -> ProgramData:
