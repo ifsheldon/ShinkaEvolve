@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from shinka.core.async_runner import AsyncEvolutionRunner, AsyncRunningJob
 from shinka.core.runner import FOLDER_PREFIX
@@ -22,6 +23,10 @@ from shinka.database.dbase import Program
 from shinka.interactive import WebController
 
 logger = logging.getLogger(__name__)
+
+_STATUS_WRITE_MAX_RETRIES = 3
+_STATUS_WRITE_RETRY_DELAY_S = 0.5
+_STATUS_WRITE_RETRIABLE_EXCEPTIONS = (sqlite3.Error, OSError)
 
 
 class AsyncInteractiveRunner(AsyncEvolutionRunner):
@@ -146,7 +151,11 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 if self._interactive_stop_requested:
                     break
 
-                self.web_controller.mark_idle()
+                await self._write_interactive_status_update(
+                    loop=asyncio.get_event_loop(),
+                    writer=self.web_controller.mark_idle,
+                    context="marking runner idle",
+                )
                 logger.info(
                     "Interactive: scheduled generations done — entering "
                     "async keep-alive mode.  Submit suggestions / merges "
@@ -181,7 +190,11 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 await asyncio.gather(*tasks, return_exceptions=True)
             await self._cleanup_async()
             if self.web_controller:
-                self.web_controller.mark_completed()
+                await self._write_interactive_status_update(
+                    loop=asyncio.get_event_loop(),
+                    writer=self.web_controller.mark_completed,
+                    context="marking runner completed",
+                )
 
         await self._print_final_summary()
 
@@ -198,9 +211,9 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         total_programs = await self.async_db.get_total_program_count_async()
         loop = asyncio.get_event_loop()
 
-        await loop.run_in_executor(
-            None,
-            lambda: self.web_controller.write_status(
+        await self._write_interactive_status_update(
+            loop=loop,
+            writer=lambda: self.web_controller.write_status(
                 generation=self.completed_generations,
                 best_score=best.combined_score if best and best.combined_score else 0.0,
                 queued_jobs=0,
@@ -209,6 +222,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 waiting_for_start=True,
                 is_resuming=self._is_resuming,
             ),
+            context="writing waiting-for-start status",
         )
 
         greenlight = threading.Event()
@@ -368,29 +382,54 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
 
     async def _write_interactive_status(self, loop: asyncio.AbstractEventLoop):
         """Push current run status to the interactive_status table."""
-        try:
-            best = await self.async_db.get_best_program_async()
-            total_programs = await self.async_db.get_total_program_count_async()
-            is_idle = (
-                len(self.running_jobs) == 0 and len(self.active_proposal_tasks) == 0
-            )
+        best = await self.async_db.get_best_program_async()
+        total_programs = await self.async_db.get_total_program_count_async()
+        is_idle = len(self.running_jobs) == 0 and len(self.active_proposal_tasks) == 0
 
-            await loop.run_in_executor(
-                None,
-                lambda: self.web_controller.write_status(
-                    generation=self.completed_generations,
-                    best_score=(
-                        best.combined_score if best and best.combined_score else 0.0
-                    ),
-                    queued_jobs=len(self.running_jobs)
-                    + len(self.active_proposal_tasks),
-                    total_programs=total_programs,
-                    target_generations=self.evo_config.num_generations,
-                    idle=is_idle,
-                ),
-            )
-        except Exception as e:
-            logger.debug(f"Error writing interactive status: {e}")
+        await self._write_interactive_status_update(
+            loop=loop,
+            writer=lambda: self.web_controller.write_status(
+                generation=self.completed_generations,
+                best_score=best.combined_score if best and best.combined_score else 0.0,
+                queued_jobs=len(self.running_jobs) + len(self.active_proposal_tasks),
+                total_programs=total_programs,
+                target_generations=self.evo_config.num_generations,
+                idle=is_idle,
+            ),
+            context="writing interactive status",
+        )
+
+    async def _write_interactive_status_update(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        writer: Callable[[], None],
+        context: str,
+    ) -> None:
+        """Write interactive status with retries for transient storage failures."""
+        for attempt in range(1, _STATUS_WRITE_MAX_RETRIES + 1):
+            try:
+                await loop.run_in_executor(None, writer)
+                return
+            except _STATUS_WRITE_RETRIABLE_EXCEPTIONS as exc:
+                if attempt == _STATUS_WRITE_MAX_RETRIES:
+                    logger.error(
+                        "Interactive status update failed after %d attempts while %s: %s",
+                        attempt,
+                        context,
+                        exc,
+                    )
+                    return
+                logger.warning(
+                    "Interactive status update attempt %d/%d failed while %s: %s",
+                    attempt,
+                    _STATUS_WRITE_MAX_RETRIES,
+                    context,
+                    exc,
+                )
+                await asyncio.sleep(_STATUS_WRITE_RETRY_DELAY_S * attempt)
+            except Exception:
+                logger.exception("Interactive status update crashed while %s", context)
+                return
 
     # --------------------------------------------------------------------- #
     # Interactive action handler                                             #
