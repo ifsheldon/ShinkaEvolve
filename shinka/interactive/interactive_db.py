@@ -235,7 +235,12 @@ class InteractiveDatabase:
                 ),
             )
             conn.commit()
-            return cur.lastrowid  # type: ignore[return-value]
+            command_id = cur.lastrowid
+            if command_id is None:
+                raise RuntimeError(
+                    "interactive_commands insert did not return a command id"
+                )
+            return int(command_id)
         finally:
             conn.close()
 
