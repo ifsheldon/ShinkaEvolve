@@ -203,16 +203,14 @@ class NoveltyDetector:
         try:
             level, display_data = self._novelty_fn(prog_data, parent_data, insp_data)
             return NoveltyResult(level=level, display_data=display_data)
-        except Exception as e:
-            logger.error(f"Novelty function raised exception: {e}")
-            # Fallback to default
-            try:
-                level, display_data = default_detect_novelty(
-                    prog_data, parent_data, insp_data
-                )
-                return NoveltyResult(level=level, display_data=display_data)
-            except Exception:
-                return NoveltyResult(level=NoveltyLevel.NONE)
+        except Exception:
+            # User novelty hooks are plugin boundaries; preserve the run and fall
+            # back to the built-in detector, but keep the full traceback.
+            logger.exception("Novelty function raised an exception")
+            level, display_data = default_detect_novelty(
+                prog_data, parent_data, insp_data
+            )
+            return NoveltyResult(level=level, display_data=display_data)
 
     # -- internal ------------------------------------------------------------
 
@@ -263,8 +261,9 @@ class NoveltyDetector:
             logger.info(f"Loaded novelty function from {path}")
             return True
 
-        except Exception as e:
-            self._set_error(f"Failed to load novelty function from {path}: {e}")
+        except Exception as exc:
+            logger.exception("Failed to load novelty function from %s", path)
+            self._set_error(f"Failed to load novelty function from {path}: {exc}")
             self._novelty_fn = default_detect_novelty
             return False
 

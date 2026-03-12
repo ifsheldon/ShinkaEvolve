@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from pydantic import ValidationError
+
 from shinka.interactive.payload_schemas import (
     MergePayload,
     SetTargetPayload,
@@ -119,8 +121,10 @@ class WebController:
                     cmd.id,
                     CommandStatus.COMPLETED.value,  # type: ignore[arg-type]
                 )
-            except Exception as exc:
-                logger.error("Interactive command %s failed: %s", cmd.id, exc)
+            except ValidationError as exc:
+                logger.error(
+                    "Interactive command %s failed validation: %s", cmd.id, exc
+                )
                 self.interactive_db.update_command_status(
                     cmd.id,  # type: ignore[arg-type]
                     CommandStatus.FAILED.value,

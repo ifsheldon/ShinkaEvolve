@@ -1,14 +1,17 @@
 import backoff
+import logging
+
 import openai
+
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
-import logging
 
 logger = logging.getLogger(__name__)
 
 MAX_TRIES = 20
 MAX_VALUE = 20
 MAX_TIME = 600
+RESPONSE_SHAPE_EXCEPTIONS = (AttributeError, IndexError, TypeError)
 
 
 def backoff_handler(details):
@@ -24,7 +27,7 @@ def get_openai_costs(response, model):
     in_tokens = response.usage.input_tokens
     try:
         thinking_tokens = response.usage.output_tokens_details.reasoning_tokens
-    except Exception:
+    except RESPONSE_SHAPE_EXCEPTIONS:
         thinking_tokens = 0
     all_out_tokens = response.usage.output_tokens
     out_tokens = response.usage.output_tokens - thinking_tokens
@@ -98,13 +101,13 @@ def query_openai(
         )
         try:
             content = response.output[0].content[0].text
-        except Exception:
+        except RESPONSE_SHAPE_EXCEPTIONS:
             # Reasoning models - ResponseOutputMessage
             content = response.output[1].content[0].text
 
         try:
             thought = response.output[0].summary[0].text
-        except Exception:
+        except RESPONSE_SHAPE_EXCEPTIONS:
             pass
         new_msg_history.append({"role": "assistant", "content": content})
     else:
@@ -178,12 +181,12 @@ async def query_openai_async(
         )
         try:
             content = response.output[0].content[0].text
-        except Exception:
+        except RESPONSE_SHAPE_EXCEPTIONS:
             # Reasoning models - ResponseOutputMessage
             content = response.output[1].content[0].text
         try:
             thought = response.output[0].summary[0].text
-        except Exception:
+        except RESPONSE_SHAPE_EXCEPTIONS:
             pass
         new_msg_history.append({"role": "assistant", "content": content})
     else:
