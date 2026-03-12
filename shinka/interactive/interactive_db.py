@@ -83,6 +83,17 @@ class InteractiveStatus:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# SQLite connection constants
+# ---------------------------------------------------------------------------
+
+#: Timeout passed to ``sqlite3.connect()`` — measured in **seconds**.
+_SQLITE_CONNECT_TIMEOUT_S: int = 30
+
+#: SQLite ``PRAGMA busy_timeout`` — measured in **milliseconds**.
+_SQLITE_BUSY_TIMEOUT_MS: int = 10_000
+
+
 class InteractiveDatabase:
     """Manages the interactive command/status tables within the evolution SQLite DB."""
 
@@ -91,9 +102,9 @@ class InteractiveDatabase:
         self._ensure_tables()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=_SQLITE_CONNECT_TIMEOUT_S)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
         conn.row_factory = sqlite3.Row
         return conn
 
