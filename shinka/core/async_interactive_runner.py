@@ -67,6 +67,8 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
     # Main run() override                                                    #
     # --------------------------------------------------------------------- #
 
+    _MAX_REENTRIES = 100  # safety guard against infinite re-entry
+
     async def run(self):
         """Main async evolution loop with interactive steering."""
         self.start_time = time.time()
@@ -98,37 +100,52 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     "Use Continue or Step in the UI to proceed."
                 )
 
-            # --- Spawn concurrent tasks -----------------------------------
-            tasks = [
-                asyncio.create_task(self._job_monitor_task(), name="job_monitor"),
-                asyncio.create_task(
-                    self._proposal_coordinator_task(),
-                    name="proposal_coordinator",
-                ),
-            ]
+            # --- Generation loop (iterative re-entry on target increase) --
+            for reentry_count in range(self._MAX_REENTRIES):
+                if reentry_count > 0:
+                    logger.info(
+                        "Re-entering generation loop (attempt %d)",
+                        reentry_count + 1,
+                    )
+                    self.cost_limit_reached = False
+                    # Reset signals for the new generation cycle
+                    self.should_stop.clear()
+                    self.finalization_complete.clear()
+                    self._interactive_stop_requested = False
 
-            if self.meta_summarizer:
+                # --- Spawn concurrent tasks -------------------------------
+                tasks = [
+                    asyncio.create_task(self._job_monitor_task(), name="job_monitor"),
+                    asyncio.create_task(
+                        self._proposal_coordinator_task(),
+                        name="proposal_coordinator",
+                    ),
+                ]
+
+                if self.meta_summarizer:
+                    tasks.append(
+                        asyncio.create_task(
+                            self._meta_summarizer_task(), name="meta_summarizer"
+                        )
+                    )
+
                 tasks.append(
                     asyncio.create_task(
-                        self._meta_summarizer_task(), name="meta_summarizer"
+                        self._interactive_command_task(),
+                        name="interactive_commands",
                     )
                 )
 
-            tasks.append(
-                asyncio.create_task(
-                    self._interactive_command_task(),
-                    name="interactive_commands",
-                )
-            )
+                # --- Wait for scheduled generations to finish -------------
+                await self.finalization_complete.wait()
 
-            # --- Wait for scheduled generations to finish -----------------
-            await self.finalization_complete.wait()
+                # --- Final embedding / meta (same as base class) ----------
+                await self._run_final_operations()
 
-            # --- Final embedding / meta (same as base class) --------------
-            await self._run_final_operations()
+                # --- Keep-alive loop (always active) ----------------------
+                if self._interactive_stop_requested:
+                    break
 
-            # --- Keep-alive loop (always active) --------------------------
-            if not self._interactive_stop_requested:
                 self.web_controller.mark_idle()
                 logger.info(
                     "Interactive: scheduled generations done — entering "
@@ -144,11 +161,15 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                 tasks = []  # reset so finally-block doesn't double-cancel
 
                 should_reenter = await self._interactive_keepalive_loop_async()
-                if should_reenter:
-                    # Target was increased, reset and re-enter run()
-                    self.cost_limit_reached = False
-                    await self.run()
-                    return  # avoid double mark_completed
+                if not should_reenter:
+                    break
+                # Loop continues: target was increased
+            else:
+                logger.error(
+                    "Interactive runner hit max re-entry limit (%d). "
+                    "Stopping to prevent runaway loop.",
+                    self._MAX_REENTRIES,
+                )
 
         except Exception as e:
             logger.error(f"Error in async interactive run: {e}")

@@ -688,177 +688,7 @@ class EvolutionRunner:
                     return
 
         # Now start parallel execution for remaining generations
-        if self.completed_generations < target_gens:
-            logger.info("Starting parallel execution for remaining generations...")
-
-            # Track time waiting for jobs when cost limit reached
-            cost_limit_wait_start = None
-            max_wait_time = 1800  # 30 min max wait for jobs
-
-            # Main loop: monitor jobs and submit new ones
-            while (
-                self.completed_generations < self.evo_config.num_generations
-                or len(self.running_jobs) > 0
-            ):
-                # Re-read target each iteration (may change via SET_TARGET)
-                target_gens = self.evo_config.num_generations
-
-                # --- Interactive: process commands and update status ---
-                interactive_actions = self.web_controller.process_commands()
-                for action in interactive_actions:
-                    self._handle_interactive_action(action)
-
-                # Handle step request: unpause + allow one submission
-                if self.web_controller.step_requested:
-                    self._step_mode = True
-                    self.web_controller._paused = False  # noqa: SLF001
-                    logger.info(
-                        "Interactive: step mode — will generate 1 node then pause"
-                    )
-
-                # Check for stop request
-                if self.web_controller.stop_requested:
-                    logger.info(
-                        "Interactive: stop requested, finishing in-flight jobs…"
-                    )
-                    # Drain running jobs
-                    while self.running_jobs:
-                        completed_jobs = self._check_completed_jobs()
-                        for job in completed_jobs:
-                            self._process_completed_job(job)
-                        if self.running_jobs:
-                            time.sleep(1)
-                    self._update_completed_generations()
-                    break
-
-                # Update Interactive status
-                best = self.db.get_best_program()
-                self.web_controller.write_status(
-                    generation=self.completed_generations,
-                    best_score=best.combined_score
-                    if best and best.combined_score
-                    else 0.0,
-                    queued_jobs=len(self.running_jobs),
-                    total_programs=self.db.program_count
-                    if hasattr(self.db, "program_count")
-                    else 0,
-                    target_generations=target_gens,
-                )
-
-                # Check for completed jobs
-                completed_jobs = self._check_completed_jobs()
-
-                # Process completed jobs
-                if completed_jobs:
-                    for job in completed_jobs:
-                        self._process_completed_job(job)
-
-                    # Update completed generations count
-                    self._update_completed_generations()
-
-                    # Step mode: auto-pause after one job completes
-                    if self._step_mode:
-                        self._step_mode = False
-                        self.web_controller._paused = True  # noqa: SLF001
-                        logger.info("Interactive: step complete, auto-pausing")
-
-                    # Periodically save bandit state (every 5 generations)
-                    if self.completed_generations % 5 == 0:
-                        self._save_bandit_state()
-
-                    if self.verbose:
-                        # Format API cost info
-                        total_costs = self._get_total_api_costs()
-                        if self.evo_config.max_api_costs is not None:
-                            cost_pct = (
-                                total_costs / self.evo_config.max_api_costs
-                            ) * 100
-                            cost_info = f" (cost: ${total_costs:.4f}, {cost_pct:.1f}%)"
-                        else:
-                            cost_info = f" (cost: ${total_costs:.4f})"
-
-                        logger.info(
-                            f"Processed {len(completed_jobs)} jobs. "
-                            f"Total completed generations: "
-                            f"{self.completed_generations}/{target_gens}"
-                            f"{cost_info}"
-                        )
-
-                # Check if we've exceeded the API cost limit using committed cost
-                # Committed cost = actual cost + estimated cost of in-flight jobs
-                if self.evo_config.max_api_costs is not None:
-                    committed_cost = self._get_committed_cost()
-                    if committed_cost >= self.evo_config.max_api_costs:
-                        # Only log once when we first detect the limit
-                        if not self.cost_limit_reached:
-                            self.cost_limit_reached = True
-                            cost_limit_wait_start = time.time()
-                            total_db_cost = self._get_total_api_costs()
-                            in_flight_cost = committed_cost - total_db_cost
-                            logger.info(
-                                f"API cost budget reached: "
-                                f"actual=${total_db_cost:.4f} + "
-                                f"in-flight=${in_flight_cost:.4f} = "
-                                f"${committed_cost:.4f} >= "
-                                f"${self.evo_config.max_api_costs:.2f}. "
-                                f"(avg proposal cost: ${self.avg_proposal_cost:.4f}) "
-                                "Stopping evolution..."
-                            )
-                            if len(self.running_jobs) > 0:
-                                logger.info(
-                                    f"Waiting for {len(self.running_jobs)} "
-                                    "running jobs to complete..."
-                                )
-
-                        # Wait for remaining running jobs to complete
-                        if len(self.running_jobs) > 0:
-                            # Check if we've been waiting too long
-                            if cost_limit_wait_start is not None:
-                                wait_time = time.time() - cost_limit_wait_start
-                                if wait_time > max_wait_time:
-                                    logger.warning(
-                                        f"Waited {wait_time:.0f}s for jobs to "
-                                        f"complete (max: {max_wait_time}s). "
-                                        f"Breaking out of loop."
-                                    )
-                                    break
-                            # Don't submit new jobs, process remaining
-                            time.sleep(2)
-                            continue
-                        else:
-                            break
-
-                # Check if we've completed all generations
-                if self.completed_generations >= target_gens:
-                    logger.info("All generations completed, exiting...")
-                    break
-
-                # --- Skip job submission while paused ---
-                if self.web_controller.is_paused:
-                    time.sleep(1)
-                    continue
-
-                # Submit new jobs to fill the queue (only if we have capacity)
-                can_submit = (
-                    len(self.running_jobs) < max_jobs
-                    and self.next_generation_to_submit < target_gens
-                    and not self.cost_limit_reached  # Don't submit if cost limit reached
-                )
-
-                # Check committed cost limit before submitting new job
-                if can_submit and self.evo_config.max_api_costs is not None:
-                    committed_cost = self._get_committed_cost()
-                    if committed_cost >= self.evo_config.max_api_costs:
-                        can_submit = False
-                        self.cost_limit_reached = True
-
-                if can_submit:
-                    self._submit_new_job()
-
-                # Wait a bit before checking again
-                time.sleep(2)
-
-            # All jobs are now handled by the main loop above
+        self._run_parallel_generations()
 
         # Perform final meta summary for remaining unprocessed programs
         best_program = self.db.get_best_program()
@@ -878,10 +708,15 @@ class EvolutionRunner:
         logger.info(f"Evolution run ended at {end_time}")
         logger.info("=" * 80)
 
-        # --- Keep-alive loop after evolution completes ---
+        # --- Keep-alive / re-entry loop after evolution completes ---
         # Enter a keep-alive loop so users can submit suggestions / merges,
         # or increase the target via SET_TARGET to resume generation.
-        if not self.web_controller.stop_requested:
+        # Uses iterative re-entry instead of recursion to avoid stack overflow.
+        _MAX_REENTRIES = 100  # safety guard
+        for _reentry in range(_MAX_REENTRIES):
+            if self.web_controller.stop_requested:
+                break
+
             self.web_controller.mark_idle()
             logger.info(
                 "Interactive: evolution generations done — entering keep-alive mode. "
@@ -890,21 +725,208 @@ class EvolutionRunner:
             )
             try:
                 self._interactive_keepalive_loop()
-                # If keepalive returned (not broke), target was increased — re-enter run()
-                if (
-                    not self.web_controller.stop_requested
-                    and self.evo_config.num_generations > self.completed_generations
-                ):
-                    logger.info("Re-entering main generation loop with new target...")
-                    # Reset cost limit flag for the new target
-                    self.cost_limit_reached = False
-                    self.run()
-                    return  # avoid double mark_completed
             except KeyboardInterrupt:
                 logger.info("Interactive: keyboard interrupt, exiting keep-alive mode.")
+                break
+
+            # Check if target was increased — re-enter the generation loop
+            if (
+                not self.web_controller.stop_requested
+                and self.evo_config.num_generations > self.completed_generations
+            ):
+                logger.info("Re-entering main generation loop with new target...")
+                self.cost_limit_reached = False
+                self._run_parallel_generations()
+
+                # Perform final operations again after this generation cycle
+                best_program = self.db.get_best_program()
+                self.meta_summarizer.perform_final_summary(
+                    str(self.results_dir), best_program
+                )
+                self._save_meta_memory()
+                self._save_bandit_state()
+                self._print_final_summary()
+                # Loop back to keep-alive
+            else:
+                break
+        else:
+            logger.error(
+                "Interactive runner hit max re-entry limit (%d). "
+                "Stopping to prevent runaway loop.",
+                _MAX_REENTRIES,
+            )
 
         # Mark run as completed (final)
         self.web_controller.mark_completed()
+
+    def _run_parallel_generations(self):
+        """Run the parallel generation loop until target is reached or stop is requested."""
+        target_gens = self.evo_config.num_generations
+        max_jobs = self.evo_config.max_parallel_jobs
+
+        if self.completed_generations >= target_gens:
+            return
+
+        logger.info("Starting parallel execution for remaining generations...")
+
+        # Track time waiting for jobs when cost limit reached
+        cost_limit_wait_start = None
+        max_wait_time = 1800  # 30 min max wait for jobs
+
+        # Main loop: monitor jobs and submit new ones
+        while (
+            self.completed_generations < self.evo_config.num_generations
+            or len(self.running_jobs) > 0
+        ):
+            # Re-read target each iteration (may change via SET_TARGET)
+            target_gens = self.evo_config.num_generations
+
+            # --- Interactive: process commands and update status ---
+            interactive_actions = self.web_controller.process_commands()
+            for action in interactive_actions:
+                self._handle_interactive_action(action)
+
+            # Handle step request: unpause + allow one submission
+            if self.web_controller.step_requested:
+                self._step_mode = True
+                self.web_controller._paused = False  # noqa: SLF001
+                logger.info("Interactive: step mode — will generate 1 node then pause")
+
+            # Check for stop request
+            if self.web_controller.stop_requested:
+                logger.info("Interactive: stop requested, finishing in-flight jobs…")
+                # Drain running jobs
+                while self.running_jobs:
+                    completed_jobs = self._check_completed_jobs()
+                    for job in completed_jobs:
+                        self._process_completed_job(job)
+                    if self.running_jobs:
+                        time.sleep(1)
+                self._update_completed_generations()
+                break
+
+            # Update Interactive status
+            best = self.db.get_best_program()
+            self.web_controller.write_status(
+                generation=self.completed_generations,
+                best_score=best.combined_score if best and best.combined_score else 0.0,
+                queued_jobs=len(self.running_jobs),
+                total_programs=self.db.program_count
+                if hasattr(self.db, "program_count")
+                else 0,
+                target_generations=target_gens,
+            )
+
+            # Check for completed jobs
+            completed_jobs = self._check_completed_jobs()
+
+            # Process completed jobs
+            if completed_jobs:
+                for job in completed_jobs:
+                    self._process_completed_job(job)
+
+                # Update completed generations count
+                self._update_completed_generations()
+
+                # Step mode: auto-pause after one job completes
+                if self._step_mode:
+                    self._step_mode = False
+                    self.web_controller._paused = True  # noqa: SLF001
+                    logger.info("Interactive: step complete, auto-pausing")
+
+                # Periodically save bandit state (every 5 generations)
+                if self.completed_generations % 5 == 0:
+                    self._save_bandit_state()
+
+                if self.verbose:
+                    # Format API cost info
+                    total_costs = self._get_total_api_costs()
+                    if self.evo_config.max_api_costs is not None:
+                        cost_pct = (total_costs / self.evo_config.max_api_costs) * 100
+                        cost_info = f" (cost: ${total_costs:.4f}, {cost_pct:.1f}%)"
+                    else:
+                        cost_info = f" (cost: ${total_costs:.4f})"
+
+                    logger.info(
+                        f"Processed {len(completed_jobs)} jobs. "
+                        f"Total completed generations: "
+                        f"{self.completed_generations}/{target_gens}"
+                        f"{cost_info}"
+                    )
+
+            # Check if we've exceeded the API cost limit using committed cost
+            # Committed cost = actual cost + estimated cost of in-flight jobs
+            if self.evo_config.max_api_costs is not None:
+                committed_cost = self._get_committed_cost()
+                if committed_cost >= self.evo_config.max_api_costs:
+                    # Only log once when we first detect the limit
+                    if not self.cost_limit_reached:
+                        self.cost_limit_reached = True
+                        cost_limit_wait_start = time.time()
+                        total_db_cost = self._get_total_api_costs()
+                        in_flight_cost = committed_cost - total_db_cost
+                        logger.info(
+                            f"API cost budget reached: "
+                            f"actual=${total_db_cost:.4f} + "
+                            f"in-flight=${in_flight_cost:.4f} = "
+                            f"${committed_cost:.4f} >= "
+                            f"${self.evo_config.max_api_costs:.2f}. "
+                            f"(avg proposal cost: ${self.avg_proposal_cost:.4f}) "
+                            "Stopping evolution..."
+                        )
+                        if len(self.running_jobs) > 0:
+                            logger.info(
+                                f"Waiting for {len(self.running_jobs)} "
+                                "running jobs to complete..."
+                            )
+
+                    # Wait for remaining running jobs to complete
+                    if len(self.running_jobs) > 0:
+                        # Check if we've been waiting too long
+                        if cost_limit_wait_start is not None:
+                            wait_time = time.time() - cost_limit_wait_start
+                            if wait_time > max_wait_time:
+                                logger.warning(
+                                    f"Waited {wait_time:.0f}s for jobs to "
+                                    f"complete (max: {max_wait_time}s). "
+                                    f"Breaking out of loop."
+                                )
+                                break
+                        # Don't submit new jobs, process remaining
+                        time.sleep(2)
+                        continue
+                    else:
+                        break
+
+            # Check if we've completed all generations
+            if self.completed_generations >= target_gens:
+                logger.info("All generations completed, exiting...")
+                break
+
+            # --- Skip job submission while paused ---
+            if self.web_controller.is_paused:
+                time.sleep(1)
+                continue
+
+            # Submit new jobs to fill the queue (only if we have capacity)
+            can_submit = (
+                len(self.running_jobs) < max_jobs
+                and self.next_generation_to_submit < target_gens
+                and not self.cost_limit_reached
+            )
+
+            # Check committed cost limit before submitting new job
+            if can_submit and self.evo_config.max_api_costs is not None:
+                committed_cost = self._get_committed_cost()
+                if committed_cost >= self.evo_config.max_api_costs:
+                    can_submit = False
+                    self.cost_limit_reached = True
+
+            if can_submit:
+                self._submit_new_job()
+
+            # Wait a bit before checking again
+            time.sleep(2)
 
     def generate_initial_program(self):
         """Generate initial program with LLM, with retries."""
