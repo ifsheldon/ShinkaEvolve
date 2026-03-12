@@ -108,3 +108,59 @@ def test_async_db_add_maps_write_fields_to_typed_program(monkeypatch):
                 sync_db.close()
 
     asyncio.run(_run())
+
+
+def test_async_db_named_row_access_helpers(monkeypatch):
+    """Async DB helper queries should work via named sqlite rows."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "named_rows_async.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                sync_db.add(
+                    Program(
+                        id="p-low",
+                        code="def f():\n    return 1\n",
+                        generation=0,
+                        correct=True,
+                        combined_score=1.0,
+                    )
+                )
+                sync_db.add(
+                    Program(
+                        id="p-high",
+                        code="def g():\n    return 2\n",
+                        generation=1,
+                        correct=True,
+                        combined_score=3.0,
+                    )
+                )
+                sync_db.add(
+                    Program(
+                        id="p-wrong",
+                        code="def h():\n    return 0\n",
+                        generation=1,
+                        correct=False,
+                        combined_score=10.0,
+                    )
+                )
+
+                assert await async_db.get_total_program_count_async() == 3
+                assert (
+                    await async_db.compute_percentile_async(2.0, correct_only=True)
+                    == 0.5
+                )
+                assert await async_db.compute_percentile_async(
+                    5.0, correct_only=False
+                ) == (2 / 3)
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())

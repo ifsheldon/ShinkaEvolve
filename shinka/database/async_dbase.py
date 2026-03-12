@@ -1003,8 +1003,11 @@ class AsyncProgramDatabase:
                     from .dbase import ProgramDatabase
 
                     thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
-                    thread_db.cursor.execute("SELECT COUNT(*) FROM programs")
-                    count = thread_db.cursor.fetchone()[0]
+                    thread_db.cursor.execute(
+                        "SELECT COUNT(*) AS program_count FROM programs"
+                    )
+                    row = thread_db.cursor.fetchone()
+                    count = int(row["program_count"]) if row is not None else 0
                     return count
                 finally:
                     self._close_thread_db(
@@ -1084,12 +1087,12 @@ class AsyncProgramDatabase:
                     # Get all scores from correct programs
                     if correct_only:
                         thread_db.cursor.execute(
-                            "SELECT combined_score FROM programs "
+                            "SELECT combined_score AS score FROM programs "
                             "WHERE correct = 1 AND combined_score IS NOT NULL"
                         )
                     else:
                         thread_db.cursor.execute(
-                            "SELECT combined_score FROM programs "
+                            "SELECT combined_score AS score FROM programs "
                             "WHERE combined_score IS NOT NULL"
                         )
 
@@ -1097,7 +1100,7 @@ class AsyncProgramDatabase:
                     if not rows:
                         return 0.5  # No programs yet, neutral percentile
 
-                    all_scores = [row[0] for row in rows]
+                    all_scores = [float(row["score"]) for row in rows]
 
                     # Compute percentile: fraction of programs this score beats
                     beats = sum(1 for s in all_scores if score > s)
