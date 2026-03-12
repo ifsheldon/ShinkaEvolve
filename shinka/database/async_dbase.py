@@ -10,6 +10,7 @@ import time
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from .complexity import analyze_code_metrics
@@ -138,6 +139,69 @@ class AsyncProgramDatabase:
         """Helper to conditionally end debug tracking."""
         if self.enable_deadlock_debugging and op_id is not None:
             db_debugger.track_end(op_id, success=success)
+
+    @staticmethod
+    def _prepare_program_for_write(
+        program: Program,
+        *,
+        parent_id: Optional[str] = None,
+        archive_insp_ids: Optional[List[str]] = None,
+        top_k_insp_ids: Optional[List[str]] = None,
+        code_diff: Optional[str] = None,
+        meta_patch_data: Optional[Dict[str, Any]] = None,
+        code_embedding: Optional[List[float]] = None,
+        embed_cost: float = 0.0,
+        complexity_override: Optional[float] = None,
+        code_metrics: Optional[Dict[str, Any]] = None,
+    ) -> Program:
+        """Return a typed Program payload for DB writes.
+
+        The async runner historically threaded extra write-time fields separately
+        from the dataclass instance, and this layer patched them in with dynamic
+        ``setattr`` calls. Normalize them into real Program fields and metadata
+        instead so the stored shape is explicit and statically visible.
+        """
+        metadata = dict(program.metadata or {})
+        if meta_patch_data:
+            metadata.update(meta_patch_data)
+        if code_metrics is not None:
+            metadata["code_analysis_metrics"] = code_metrics
+        metadata["embed_cost"] = embed_cost
+
+        updated_program = replace(
+            program,
+            parent_id=parent_id if parent_id is not None else program.parent_id,
+            archive_inspiration_ids=list(
+                archive_insp_ids
+                if archive_insp_ids is not None
+                else program.archive_inspiration_ids
+            ),
+            top_k_inspiration_ids=list(
+                top_k_insp_ids
+                if top_k_insp_ids is not None
+                else program.top_k_inspiration_ids
+            ),
+            code_diff=code_diff if code_diff is not None else program.code_diff,
+            complexity=(
+                complexity_override
+                if complexity_override is not None
+                else program.complexity
+            ),
+            embedding=list(
+                code_embedding if code_embedding is not None else program.embedding
+            ),
+            metadata=metadata,
+        )
+
+        # Keep the caller-visible object aligned with what is written to the DB.
+        program.parent_id = updated_program.parent_id
+        program.archive_inspiration_ids = updated_program.archive_inspiration_ids
+        program.top_k_inspiration_ids = updated_program.top_k_inspiration_ids
+        program.code_diff = updated_program.code_diff
+        program.complexity = updated_program.complexity
+        program.embedding = updated_program.embedding
+        program.metadata = updated_program.metadata
+        return updated_program
 
     @staticmethod
     def _close_thread_db(thread_db: Optional[ProgramDatabase], *, context: str) -> None:
@@ -382,6 +446,8 @@ class AsyncProgramDatabase:
         try:
             # Prepare program data outside the lock to reduce lock time
             await asyncio.sleep(0)  # Yield control to event loop
+            computed_complexity: Optional[float] = None
+            code_metrics: Optional[Dict[str, Any]] = None
 
             # Asynchronously calculate complexity if not provided
             if program.complexity == 0.0:
@@ -395,10 +461,7 @@ class AsyncProgramDatabase:
                         program.code,
                         language,
                     )
-                    program.complexity = code_metrics.get("complexity_score", 0.0)
-                    if program.metadata is None:
-                        program.metadata = {}
-                    program.metadata["code_analysis_metrics"] = code_metrics
+                    computed_complexity = code_metrics.get("complexity_score", 0.0)
                 except CODE_ANALYSIS_EXCEPTIONS as exc:
                     logger.warning(
                         "Could not calculate complexity for program %s: %s",
@@ -406,26 +469,24 @@ class AsyncProgramDatabase:
                         exc,
                     )
                     # Fallback to length
-                    program.complexity = float(len(program.code))
+                    computed_complexity = float(len(program.code))
 
-            # Set additional metadata using setattr for dynamic attributes
-            if parent_id:
-                setattr(program, "parent_id", parent_id)
-            if archive_insp_ids:
-                setattr(program, "archive_inspiration_ids", archive_insp_ids)
-            if top_k_insp_ids:
-                setattr(program, "top_k_inspiration_ids", top_k_insp_ids)
-            if code_diff:
-                setattr(program, "code_diff", code_diff)
-            if meta_patch_data:
-                setattr(program, "meta_patch_data", meta_patch_data)
-            if code_embedding:
-                setattr(program, "code_embedding", code_embedding)
-            setattr(program, "embed_cost", embed_cost)
+            prepared_program = self._prepare_program_for_write(
+                program,
+                parent_id=parent_id,
+                archive_insp_ids=archive_insp_ids,
+                top_k_insp_ids=top_k_insp_ids,
+                code_diff=code_diff,
+                meta_patch_data=meta_patch_data,
+                code_embedding=code_embedding,
+                embed_cost=embed_cost,
+                complexity_override=computed_complexity,
+                code_metrics=code_metrics,
+            )
 
             # Use semaphore to prevent concurrent database operations that can deadlock
             async with self._db_semaphore:
-                await self._add_program_fast_async(program)
+                await self._add_program_fast_async(prepared_program)
 
                 # Track programs and schedule embedding recomputation (inside semaphore)
                 async with self._lock:
@@ -496,22 +557,18 @@ class AsyncProgramDatabase:
                     embed_cost,
                 ) = program_data
 
-                # Set additional metadata using setattr for dynamic attributes
-                if parent_id:
-                    setattr(program, "parent_id", parent_id)
-                if archive_insp_ids:
-                    setattr(program, "archive_inspiration_ids", archive_insp_ids)
-                if top_k_insp_ids:
-                    setattr(program, "top_k_inspiration_ids", top_k_insp_ids)
-                if code_diff:
-                    setattr(program, "code_diff", code_diff)
-                if meta_patch_data:
-                    setattr(program, "meta_patch_data", meta_patch_data)
-                if code_embedding:
-                    setattr(program, "code_embedding", code_embedding)
-                setattr(program, "embed_cost", embed_cost)
-
-                prepared_programs.append(program)
+                prepared_programs.append(
+                    self._prepare_program_for_write(
+                        program,
+                        parent_id=parent_id,
+                        archive_insp_ids=archive_insp_ids,
+                        top_k_insp_ids=top_k_insp_ids,
+                        code_diff=code_diff,
+                        meta_patch_data=meta_patch_data,
+                        code_embedding=code_embedding,
+                        embed_cost=embed_cost,
+                    )
+                )
 
             # Use lock only for the actual database writes
             async with self._lock:
