@@ -10,6 +10,12 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from shinka.interactive.payload_schemas import (
+    MergePayload,
+    SetTargetPayload,
+    SuggestPayload,
+)
+
 from shinka.interactive.interactive_db import (
     CommandStatus,
     CommandType,
@@ -214,15 +220,14 @@ class WebController:
             return None
 
         if ct == CommandType.SET_TARGET.value:
-            payload = cmd.payload
-            new_target = payload.get("target_generations")
-            if new_target is None:
-                raise ValueError("set_target command requires target_generations")
-            new_target = int(new_target)
-            logger.info("Interactive: set_target — target_generations=%d", new_target)
+            p = SetTargetPayload.model_validate(cmd.payload)
+            logger.info(
+                "Interactive: set_target — target_generations=%d",
+                p.target_generations,
+            )
             return {
                 "action": "set_target",
-                "target_generations": new_target,
+                "target_generations": p.target_generations,
                 "command_id": cmd.id,
             }
 
@@ -232,44 +237,34 @@ class WebController:
             return None
 
         if ct == CommandType.SUGGEST.value:
-            payload = cmd.payload
-            parent_id = payload.get("parent_id")
-            prompt = payload.get("prompt", "")
-            patch_type = payload.get("patch_type", "full")
-            if not parent_id:
-                raise ValueError("suggest command requires parent_id")
+            p = SuggestPayload.model_validate(cmd.payload)
             logger.info(
                 "Interactive: suggest — parent=%s patch_type=%s prompt=%.60s…",
-                parent_id,
-                patch_type,
-                prompt,
+                p.parent_id,
+                p.patch_type,
+                p.prompt,
             )
             return {
                 "action": "suggest",
-                "parent_id": parent_id,
-                "prompt": prompt,
-                "patch_type": patch_type,
+                "parent_id": p.parent_id,
+                "prompt": p.prompt,
+                "patch_type": p.patch_type,
                 "command_id": cmd.id,
             }
 
         if ct == CommandType.MERGE.value:
-            payload = cmd.payload
-            parent_ids = payload.get("parent_ids", [])
-            prompt = payload.get("prompt", "")
-            patch_type = payload.get("patch_type", "cross")
-            if len(parent_ids) < 2:
-                raise ValueError("merge command requires at least 2 parent_ids")
+            p = MergePayload.model_validate(cmd.payload)
             logger.info(
                 "Interactive: merge — parents=%s patch_type=%s prompt=%.60s…",
-                parent_ids,
-                patch_type,
-                prompt,
+                p.parent_ids,
+                p.patch_type,
+                p.prompt,
             )
             return {
                 "action": "merge",
-                "parent_ids": parent_ids,
-                "prompt": prompt,
-                "patch_type": patch_type,
+                "parent_ids": p.parent_ids,
+                "prompt": p.prompt,
+                "patch_type": p.patch_type,
                 "command_id": cmd.id,
             }
 
