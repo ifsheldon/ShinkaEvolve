@@ -15,7 +15,13 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Never, Optional, TypeAlias, cast
+
+from shinka.interactive.payload_schemas import (
+    MergePayload,
+    SetTargetPayload,
+    SuggestPayload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +61,86 @@ class RunState(str, Enum):
     ERROR = "error"
 
 
+EmptyPayload: TypeAlias = dict[str, Never]
+InteractiveCommandPayload: TypeAlias = (
+    EmptyPayload | SetTargetPayload | SuggestPayload | MergePayload
+)
+InteractiveCommandPayloadInput: TypeAlias = (
+    InteractiveCommandPayload | Mapping[str, Any] | None
+)
+
+
+def _empty_payload() -> EmptyPayload:
+    """Return an empty payload value for commands that carry no data."""
+    return {}
+
+
+def _payload_model_for_command(
+    command_type: CommandType,
+) -> type[SetTargetPayload] | type[SuggestPayload] | type[MergePayload] | None:
+    """Return the payload schema for a command, if it has one."""
+    if command_type == CommandType.SET_TARGET:
+        return SetTargetPayload
+    if command_type == CommandType.SUGGEST:
+        return SuggestPayload
+    if command_type == CommandType.MERGE:
+        return MergePayload
+    return None
+
+
+def _serialize_command_payload(payload: InteractiveCommandPayload) -> Dict[str, Any]:
+    """Convert a typed payload into a JSON-serializable mapping."""
+    if isinstance(payload, (SetTargetPayload, SuggestPayload, MergePayload)):
+        return payload.model_dump()
+    return {}
+
+
+def _normalize_command_payload(
+    command_type: CommandType,
+    payload: InteractiveCommandPayloadInput,
+) -> InteractiveCommandPayload:
+    """Validate and normalize command payloads before writing them to SQLite."""
+    payload_model = _payload_model_for_command(command_type)
+    if payload_model is None:
+        if payload is None:
+            return _empty_payload()
+        payload_data = (
+            payload.model_dump()
+            if isinstance(payload, (SetTargetPayload, SuggestPayload, MergePayload))
+            else dict(payload)
+        )
+        if payload_data:
+            raise ValueError(f"{command_type.value} does not accept a payload")
+        return _empty_payload()
+
+    if isinstance(payload, payload_model):
+        return payload
+
+    payload_data = (
+        {}
+        if payload is None
+        else payload.model_dump()
+        if isinstance(payload, (SetTargetPayload, SuggestPayload, MergePayload))
+        else dict(payload)
+    )
+    return cast(InteractiveCommandPayload, payload_model.model_validate(payload_data))
+
+
+def _deserialize_command_payload(
+    command_type: CommandType,
+    raw_payload: str | None,
+) -> InteractiveCommandPayload:
+    """Parse and validate a payload loaded from SQLite."""
+    payload_data = json.loads(raw_payload) if raw_payload else {}
+    return _normalize_command_payload(command_type, payload_data)
+
+
 @dataclass
 class InteractiveCommand:
     id: Optional[int] = None
-    command_type: str = ""
-    payload: Dict[str, Any] = field(default_factory=dict)
-    status: str = CommandStatus.PENDING.value
+    command_type: CommandType = CommandType.PAUSE
+    payload: InteractiveCommandPayload = field(default_factory=_empty_payload)
+    status: CommandStatus = CommandStatus.PENDING
     created_at: float = 0.0
     processed_at: Optional[float] = None
     result: Optional[str] = None
@@ -138,16 +218,21 @@ class InteractiveDatabase:
 
     def push_command(
         self,
-        command_type: str,
-        payload: Optional[Dict[str, Any]] = None,
+        command_type: CommandType,
+        payload: InteractiveCommandPayloadInput = None,
     ) -> int:
         """Insert a new interactive command (called by the web backend)."""
+        normalized_payload = _normalize_command_payload(command_type, payload)
         conn = self._connect()
         try:
             cur = conn.execute(
                 "INSERT INTO interactive_commands (command_type, payload, status, created_at) "
                 "VALUES (?, ?, 'pending', ?)",
-                (command_type, json.dumps(payload or {}), time.time()),
+                (
+                    command_type.value,
+                    json.dumps(_serialize_command_payload(normalized_payload)),
+                    time.time(),
+                ),
             )
             conn.commit()
             return cur.lastrowid  # type: ignore[return-value]
@@ -164,12 +249,15 @@ class InteractiveDatabase:
             ).fetchall()
             cmds: List[InteractiveCommand] = []
             for r in rows:
+                command_type = CommandType(r["command_type"])
                 cmds.append(
                     InteractiveCommand(
                         id=r["id"],
-                        command_type=r["command_type"],
-                        payload=json.loads(r["payload"]) if r["payload"] else {},
-                        status=r["status"],
+                        command_type=command_type,
+                        payload=_deserialize_command_payload(
+                            command_type, r["payload"]
+                        ),
+                        status=CommandStatus(r["status"]),
                         created_at=r["created_at"],
                         processed_at=r["processed_at"],
                         result=r["result"],
@@ -182,7 +270,7 @@ class InteractiveDatabase:
     def update_command_status(
         self,
         cmd_id: int,
-        status: str,
+        status: CommandStatus,
         result: Optional[str] = None,
     ) -> None:
         """Mark a command as processing/completed/failed (called by runner)."""
@@ -191,7 +279,7 @@ class InteractiveDatabase:
             conn.execute(
                 "UPDATE interactive_commands SET status = ?, processed_at = ?, result = ? "
                 "WHERE id = ?",
-                (status, time.time(), result, cmd_id),
+                (status.value, time.time(), result, cmd_id),
             )
             conn.commit()
         finally:
@@ -206,11 +294,12 @@ class InteractiveDatabase:
             ).fetchone()
             if not r:
                 return None
+            command_type = CommandType(r["command_type"])
             return InteractiveCommand(
                 id=r["id"],
-                command_type=r["command_type"],
-                payload=json.loads(r["payload"]) if r["payload"] else {},
-                status=r["status"],
+                command_type=command_type,
+                payload=_deserialize_command_payload(command_type, r["payload"]),
+                status=CommandStatus(r["status"]),
                 created_at=r["created_at"],
                 processed_at=r["processed_at"],
                 result=r["result"],
@@ -229,14 +318,15 @@ class InteractiveDatabase:
             return [
                 InteractiveCommand(
                     id=r["id"],
-                    command_type=r["command_type"],
-                    payload=json.loads(r["payload"]) if r["payload"] else {},
-                    status=r["status"],
+                    command_type=command_type,
+                    payload=_deserialize_command_payload(command_type, r["payload"]),
+                    status=CommandStatus(r["status"]),
                     created_at=r["created_at"],
                     processed_at=r["processed_at"],
                     result=r["result"],
                 )
                 for r in rows
+                for command_type in [CommandType(r["command_type"])]
             ]
         finally:
             conn.close()

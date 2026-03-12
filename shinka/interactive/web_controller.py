@@ -111,7 +111,7 @@ class WebController:
         for cmd in commands:
             self.interactive_db.update_command_status(
                 cmd.id,
-                CommandStatus.PROCESSING.value,  # type: ignore[arg-type]
+                CommandStatus.PROCESSING,
             )
             try:
                 action = self._handle_command(cmd)
@@ -119,15 +119,15 @@ class WebController:
                     actions.append(action)
                 self.interactive_db.update_command_status(
                     cmd.id,
-                    CommandStatus.COMPLETED.value,  # type: ignore[arg-type]
+                    CommandStatus.COMPLETED,
                 )
             except ValidationError as exc:
                 logger.error(
                     "Interactive command %s failed validation: %s", cmd.id, exc
                 )
                 self.interactive_db.update_command_status(
-                    cmd.id,  # type: ignore[arg-type]
-                    CommandStatus.FAILED.value,
+                    cmd.id,
+                    CommandStatus.FAILED,
                     result=str(exc),
                 )
 
@@ -205,33 +205,35 @@ class WebController:
     def _handle_command(self, cmd: InteractiveCommand) -> Optional[dict]:
         ct = cmd.command_type
 
-        if ct == CommandType.PAUSE.value:
+        if ct == CommandType.PAUSE:
             logger.info("Interactive: pause requested")
             self._paused = True
             return None
 
-        if ct == CommandType.RESUME.value:
+        if ct == CommandType.RESUME:
             logger.info("Interactive: resume requested")
             self._paused = False
             return None
 
-        if ct == CommandType.STOP.value:
+        if ct == CommandType.STOP:
             logger.info("Interactive: stop requested")
             self._stop_requested = True
             return None
 
-        if ct == CommandType.CONTINUE.value:
+        if ct == CommandType.CONTINUE:
             logger.info("Interactive: continue requested")
             self._continue_requested = True
             return None
 
-        if ct == CommandType.START.value:
+        if ct == CommandType.START:
             logger.info("Interactive: start requested (greenlight)")
             self._start_requested = True
             return None
 
-        if ct == CommandType.SET_TARGET.value:
-            p = SetTargetPayload.model_validate(cmd.payload)
+        if ct == CommandType.SET_TARGET:
+            if not isinstance(cmd.payload, SetTargetPayload):
+                raise TypeError(f"{ct.value} payload must be SetTargetPayload")
+            p = cmd.payload
             logger.info(
                 "Interactive: set_target — target_generations=%d",
                 p.target_generations,
@@ -242,13 +244,15 @@ class WebController:
                 "command_id": cmd.id,
             }
 
-        if ct == CommandType.STEP.value:
+        if ct == CommandType.STEP:
             logger.info("Interactive: step requested")
             self._step_requested = True
             return None
 
-        if ct == CommandType.SUGGEST.value:
-            p = SuggestPayload.model_validate(cmd.payload)
+        if ct == CommandType.SUGGEST:
+            if not isinstance(cmd.payload, SuggestPayload):
+                raise TypeError(f"{ct.value} payload must be SuggestPayload")
+            p = cmd.payload
             logger.info(
                 "Interactive: suggest — parent=%s patch_type=%s prompt=%.60s…",
                 p.parent_id,
@@ -263,8 +267,10 @@ class WebController:
                 "command_id": cmd.id,
             }
 
-        if ct == CommandType.MERGE.value:
-            p = MergePayload.model_validate(cmd.payload)
+        if ct == CommandType.MERGE:
+            if not isinstance(cmd.payload, MergePayload):
+                raise TypeError(f"{ct.value} payload must be MergePayload")
+            p = cmd.payload
             logger.info(
                 "Interactive: merge — parents=%s patch_type=%s prompt=%.60s…",
                 p.parent_ids,

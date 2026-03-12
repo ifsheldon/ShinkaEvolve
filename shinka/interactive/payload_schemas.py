@@ -25,7 +25,7 @@ MAX_PARENT_IDS: int = 10
 MAX_PROMPT_CHARS: int = 8_000
 """Prompts longer than this are silently truncated before being forwarded."""
 
-VALID_PATCH_TYPES: frozenset[str] = frozenset({"full", "cross", "diff"})
+VALID_PATCH_TYPES: frozenset[str] = frozenset({"auto", "full", "cross", "diff"})
 """Allowed values for the patch_type field."""
 
 
@@ -44,9 +44,7 @@ class SetTargetPayload(BaseModel):
     def must_be_in_bounds(cls, v: int) -> int:
         """Enforce 1 ≤ target_generations ≤ MAX_TARGET_GENERATIONS."""
         if v < 1:
-            raise ValueError(
-                f"target_generations must be >= 1, got {v}"
-            )
+            raise ValueError(f"target_generations must be >= 1, got {v}")
         if v > MAX_TARGET_GENERATIONS:
             raise ValueError(
                 f"target_generations must be <= {MAX_TARGET_GENERATIONS}, got {v}"
@@ -96,9 +94,7 @@ class MergePayload(BaseModel):
     @classmethod
     def validate_parent_ids(cls, v: List[str]) -> List[str]:
         if len(v) < 2:
-            raise ValueError(
-                f"merge requires at least 2 parent_ids, got {len(v)}"
-            )
+            raise ValueError(f"merge requires at least 2 parent_ids, got {len(v)}")
         if len(v) > MAX_PARENT_IDS:
             raise ValueError(
                 f"merge accepts at most {MAX_PARENT_IDS} parent_ids, got {len(v)}"
