@@ -3,7 +3,6 @@ from typing import List
 
 def generate_novelty(rng: int) -> str:
     # add any relevant imports inside this function
-    import math
 
     # generate some cool and inspiring outputs based on rng
     return "Hello world!"

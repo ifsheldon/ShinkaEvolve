@@ -72,7 +72,7 @@ def plot_cumulative_llm_calls(
             model_to_color[lbl] = line.get_color()
     # Ensure color order matches sorted model order
     bar_colors = [model_to_color.get(m, None) for m in model_names_list]
-    bars = inset_ax.bar(model_names_list, total_costs_list, color=bar_colors)
+    inset_ax.bar(model_names_list, total_costs_list, color=bar_colors)
     inset_ax.set_ylabel("Total API Cost", fontsize=12)
     total_sum_cost = sum(total_costs_list)
     inset_ax.set_title(

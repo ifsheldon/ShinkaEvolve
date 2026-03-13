@@ -13,9 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -863,7 +861,6 @@ class TestRegressionRunPatchAsyncKwargs:
     @pytest.mark.asyncio
     async def test_run_patch_async_accepts_patch_type_override(self, runner):
         """_run_patch_async must accept patch_type_override kwarg."""
-        from shinka.core.async_interactive_runner import ShinkaEvolveInteractiveRunner
 
         # Use a real (non-mocked) _run_patch_async from the base class to
         # verify the signature accepts the kwargs. We mock the internals it

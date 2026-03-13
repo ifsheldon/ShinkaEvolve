@@ -1,13 +1,8 @@
 """Tests for the NoveltyDetector and default novelty detection logic."""
 
 import json
-import os
-import tempfile
 import textwrap
-from dataclasses import replace
-from unittest.mock import patch
 
-import pytest
 
 from shinka.core.novelty_detector import (
     NoveltyDetector,
@@ -339,7 +334,7 @@ class TestNoveltyDetectorCustomFunction:
 
 class TestNoveltyDetectorErrorFile:
     def test_error_file_written(self, tmp_path):
-        detector = NoveltyDetector(
+        NoveltyDetector(
             novelty_function_path=str(tmp_path / "missing.py"),
             results_dir=str(tmp_path),
         )
@@ -350,7 +345,7 @@ class TestNoveltyDetectorErrorFile:
 
     def test_error_file_cleared_on_success(self, tmp_path):
         # First create an error
-        detector = NoveltyDetector(
+        NoveltyDetector(
             novelty_function_path=str(tmp_path / "missing.py"),
             results_dir=str(tmp_path),
         )

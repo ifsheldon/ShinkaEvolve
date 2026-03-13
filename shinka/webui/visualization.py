@@ -505,7 +505,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if not os.path.exists(meta_dir):
             # Fall back to looking in the db_dir for backward compatibility
-            print(f"[SERVER] Meta subdirectory not found, checking DB directory")
+            print("[SERVER] Meta subdirectory not found, checking DB directory")
             meta_dir = db_dir
 
         if not os.path.exists(meta_dir):

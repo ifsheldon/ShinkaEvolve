@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-import numpy as np
 from typing import Optional, Callable, Any
 import rich.box  # type: ignore
 import rich  # type: ignore
@@ -218,7 +217,6 @@ class DatabaseDisplay:
                         best_score = score
                     num_with_scores += 1
                     all_scores.append(score)
-        median_score = np.median(all_scores)
 
         # Table 1: Summary Table
         summary_table = RichTable(

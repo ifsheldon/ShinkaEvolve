@@ -1,14 +1,11 @@
 """Tests for WebController interactive command processing and status management."""
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from shinka.interactive.interactive_db import (
     CommandStatus,
     CommandType,
-    InteractiveDatabase,
     RunState,
 )
 from shinka.interactive.payload_schemas import (

@@ -1,8 +1,6 @@
 """Extended tests for InteractiveDatabase command/status round-trips."""
 
-import tempfile
 import time
-from pathlib import Path
 
 import pytest
 
