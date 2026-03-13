@@ -4,12 +4,7 @@ from .load_df import (
     store_best_path,
     load_prompts_to_df,
 )
-from .general import (
-    parse_time_to_seconds,
-    load_results,
-    load_configs_from_yaml,
-    write_timeout_marker,
-)
+from .general import parse_time_to_seconds, load_results, load_configs_from_yaml, write_timeout_marker
 from .utils_hydra import (
     build_cfgs_from_python,
     add_evolve_markers,

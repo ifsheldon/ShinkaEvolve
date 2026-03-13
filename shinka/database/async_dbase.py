@@ -268,6 +268,10 @@ class AsyncProgramDatabase:
                         from .dbase import ProgramDatabase
 
                         thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                        if hasattr(thread_db, "set_display_console"):
+                            thread_db.set_display_console(
+                                getattr(self.sync_db, "display_console", None)
+                            )
                         result = thread_db.sample(
                             target_generation=target_generation,
                             novelty_attempt=novelty_attempt,
@@ -298,6 +302,38 @@ class AsyncProgramDatabase:
         except Exception:
             self._debug_track_end(op_id, success=False)
             raise
+
+    async def sample_inspirations_for_parent_async(
+        self,
+        parent: "Program",
+        num_archive_insp: int,
+        num_top_k_insp: int,
+    ) -> Tuple[List["Program"], List["Program"]]:
+        """Async version of sample_inspirations_for_parent.
+
+        Used by interactive actions (suggest/merge) where the parent is
+        chosen by the expert rather than by the sampling strategy.
+        """
+        async with self._db_semaphore:
+
+            def _thread_safe():
+                from .dbase import ProgramDatabase
+
+                thread_db = None
+                try:
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    return thread_db.sample_inspirations_for_parent(
+                        parent, num_archive_insp, num_top_k_insp
+                    )
+                finally:
+                    if thread_db:
+                        try:
+                            thread_db.close()
+                        except Exception as e:
+                            logger.warning(f"Error closing thread database: {e}")
+
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(self.executor, _thread_safe)
 
     async def sample_with_fix_mode_async(
         self,
@@ -332,6 +368,10 @@ class AsyncProgramDatabase:
                         from .dbase import ProgramDatabase
 
                         thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                        if hasattr(thread_db, "set_display_console"):
+                            thread_db.set_display_console(
+                                getattr(self.sync_db, "display_console", None)
+                            )
                         result = thread_db.sample_with_fix_mode(
                             target_generation=target_generation,
                             novelty_attempt=novelty_attempt,
@@ -626,6 +666,10 @@ class AsyncProgramDatabase:
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
+                if hasattr(thread_db, "set_display_console"):
+                    thread_db.set_display_console(
+                        getattr(self.sync_db, "display_console", None)
+                    )
 
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters

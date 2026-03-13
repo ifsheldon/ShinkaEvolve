@@ -17,8 +17,8 @@ import uuid
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from shinka.core.async_runner import AsyncEvolutionRunner, AsyncRunningJob
-from shinka.core.runner import FOLDER_PREFIX
+from shinka.core.async_runner import ShinkaEvolveRunner, AsyncRunningJob
+from shinka.core.config import FOLDER_PREFIX
 from shinka.database.dbase import Program
 from shinka.interactive import WebController
 
@@ -29,7 +29,7 @@ _STATUS_WRITE_RETRY_DELAY_S = 0.5
 _STATUS_WRITE_RETRIABLE_EXCEPTIONS = (sqlite3.Error, OSError)
 
 
-class AsyncInteractiveRunner(AsyncEvolutionRunner):
+class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
     """Async evolution runner with interactive steering support.
 
     Adds three capabilities on top of :class:`AsyncEvolutionRunner`:
@@ -58,9 +58,6 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         self.interactive_paused = asyncio.Event()
         self.interactive_paused.set()  # start un-paused
 
-        # Continue signal for manual mode: coordinator waits for this.
-        self.continue_signal = asyncio.Event()
-
         # Step mode: generate one proposal then auto-pause.
         self._step_mode = False
 
@@ -68,13 +65,16 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         # stop" from "generations exhausted".
         self._interactive_stop_requested = False
 
+        # Whether this is a resumed run (set in run() after setup).
+        self._is_resuming = False
+
     # --------------------------------------------------------------------- #
     # Main run() override                                                    #
     # --------------------------------------------------------------------- #
 
     _MAX_REENTRIES = 100  # safety guard against infinite re-entry
 
-    async def run(self):
+    async def run_async(self):
         """Main async evolution loop with interactive steering."""
         self.start_time = time.time()
         self.last_progress_time = self.start_time
@@ -83,6 +83,9 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         try:
             # --- Setup (inherited) ----------------------------------------
             await self._setup_async()
+
+            # Determine resume state from the DB populated during setup
+            self._is_resuming = self.db.last_iteration > 0
 
             # --- Always init interactive controller -----------------------
             db_path = str(Path(self.results_dir) / "programs.sqlite")
@@ -117,6 +120,15 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     self.should_stop.clear()
                     self.finalization_complete.clear()
                     self._interactive_stop_requested = False
+
+                    # Pause and wait for user to click Continue before
+                    # starting the new generation cycle
+                    self.web_controller.pause()
+                    self.interactive_paused.clear()
+                    logger.info(
+                        "Target increased — paused. Click Continue in the "
+                        "UI to start generating."
+                    )
 
                 # --- Spawn concurrent tasks -------------------------------
                 tasks = [
@@ -310,7 +322,7 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     self.async_db.get_best_program_async(), timeout=30.0
                 )
                 if best_program:
-                    await asyncio.wait_for(
+                    success, final_meta_cost = await asyncio.wait_for(
                         self.meta_summarizer.perform_final_summary_async(
                             str(self.results_dir),
                             best_program,
@@ -318,6 +330,10 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                         ),
                         timeout=600.0,
                     )
+                    if self.verbose and success and final_meta_cost > 0:
+                        logger.info(
+                            f"Final meta summary completed (cost: ${final_meta_cost:.4f})"
+                        )
             except asyncio.TimeoutError:
                 logger.warning("Final meta summary timed out")
             except Exception as e:
@@ -358,10 +374,6 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     self.slot_available.set()
                     break
 
-                if self.web_controller.continue_requested:
-                    self.continue_signal.set()
-                    self.web_controller.clear_continue()
-
                 # Step mode: unpause + allow one submission
                 if self.web_controller.step_requested:
                     self._step_mode = True
@@ -390,7 +402,11 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         """Push current run status to the interactive_status table."""
         best = await self.async_db.get_best_program_async()
         total_programs = await self.async_db.get_total_program_count_async()
-        is_idle = len(self.running_jobs) == 0 and len(self.active_proposal_tasks) == 0
+        is_idle = (
+            len(self.running_jobs) == 0
+            and len(self.active_proposal_tasks) == 0
+            and self.completed_generations >= self.evo_config.num_generations
+        )
 
         await self._write_interactive_status_update(
             loop=loop,
@@ -489,9 +505,11 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     parent_ids[0],
                 )
                 return
-            archive_programs = await self.async_db.get_programs_by_ids_async(
-                parent_ids[1:]
-            )
+            archive_programs = [
+                p
+                for pid in parent_ids[1:]
+                if (p := await self.async_db.get_async(pid)) is not None
+            ]
             top_k_programs: List[Program] = []
             patch_type_override = "cross"
         else:
@@ -701,12 +719,15 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
                     # Wait for either un-pause or stop
                     unpause_task = asyncio.create_task(self.interactive_paused.wait())
                     stop_task = asyncio.create_task(self.should_stop.wait())
-                    done, pending = await asyncio.wait(
-                        [unpause_task, stop_task],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for p in pending:
-                        p.cancel()
+                    try:
+                        done, pending = await asyncio.wait(
+                            [unpause_task, stop_task],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        for t in (unpause_task, stop_task):
+                            if not t.done():
+                                t.cancel()
                     if self.should_stop.is_set():
                         break
                     continue
@@ -847,7 +868,15 @@ class AsyncInteractiveRunner(AsyncEvolutionRunner):
         finally:
             cmd_task.cancel()
             monitor_task.cancel()
-            await asyncio.gather(cmd_task, monitor_task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(cmd_task, monitor_task, return_exceptions=True),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Keep-alive tasks did not shut down within 10s"
+                )
             logger.info("Interactive: async keep-alive ended")
 
         return should_reenter
