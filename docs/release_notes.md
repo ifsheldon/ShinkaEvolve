@@ -2,9 +2,18 @@
 
 These notes summarize local changes since the last commit.
 
+## PyPI Packaging Release (`shinka-evolve` 0.0.1)
+
+- Added a first PyPI distribution under the package name `shinka-evolve`.
+- Added GitHub Actions trusted publishing via `.github/workflows/pypi-release.yml`.
+- Bundled Hydra presets inside `shinka/configs/` so `shinka_launch` works from a PyPI install.
+- Preserved the original shorthand launch syntax such as `variant=...`, `task=...`, `database=...`, and `cluster=...`.
+- Added an artifact gate that rejects `.gitignore`-matched files from release outputs.
+- Updated README, getting-started docs, agent docs, and skill installation notes to prefer PyPI install and document `--config-dir` for user-defined presets.
+
 ## Highlights
 
-- Added a full async pipeline via `AsyncEvolutionRunner` for concurrent proposal generation and evaluation.
+- Added a full async pipeline via `ShinkaEvolveRunner` for concurrent proposal generation and evaluation.
 - Introduced prompt co-evolution (system prompt archive, prompt mutation, prompt fitness tracking).
 - Expanded island and parent sampling logic, including dynamic island spawning on stagnation.
 - Refactored LLM + embedding stack into provider-based modules.
@@ -50,7 +59,7 @@ These notes summarize local changes since the last commit.
 
 ## Changed
 
-- `EvolutionRunner` and async runner now include:
+- `ShinkaEvolveRunner` now includes:
   - stronger resume behavior (meta memory + bandit state persistence)
   - fix-mode sampling fallback when no correct program exists
   - richer metadata and cost accounting

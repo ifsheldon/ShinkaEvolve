@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 results/
+examples/mnist_train/
 
 # C extensions
 *.so
@@ -23,7 +24,7 @@ sdist/
 var/
 wheels/
 share/python-wheels/
-*.egg-info/
+/*.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
