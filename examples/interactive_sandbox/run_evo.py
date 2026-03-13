@@ -11,17 +11,16 @@ score in [0, 10].
 
 Usage
 -----
-    # From the ShinkaEvolve root:
-    cd examples/interactive_sandbox
-    python run_evo.py              # fresh run (cleans previous DB/results)
-    python run_evo.py --resume     # resume mode (manual interaction, keeps prior run)
+    # One-command launch (starts backend + frontend + runner together):
+    cd evolve-shell
+    uv run python start.py ../ShinkaEvolve/examples/interactive_sandbox \
+        --run ../ShinkaEvolve/examples/interactive_sandbox/run_evo.py \
+        --auto-port --open
 
-    # Then in another terminal, start evolve-shell to see the UI:
-    cd ../../evolve-shell && npm run dev
-
-    # The evolve-shell backend should point at the same DB:
-    cd ../../evolve-shell/backend
-    SHINKA_SEARCH_ROOT=../../examples/interactive_sandbox python -m uvicorn main:app --reload
+    # Or run standalone (no UI):
+    cd ShinkaEvolve/examples/interactive_sandbox
+    python run_evo.py              # fresh run
+    python run_evo.py --resume     # resume (keeps prior run)
 """
 
 from __future__ import annotations
@@ -301,6 +300,9 @@ def _create_evo_config() -> EvolutionConfig:
         results_dir="results_sandbox",
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
         novelty_function_path=novelty_path,  # mock novelty — randomly fires
+        # Push-based UI updates.  Auto-detected from EVOLVE_SHELL_URL env
+        # var when launched via start.py --run, or set explicitly here.
+        callback_url=os.environ.get("EVOLVE_SHELL_URL", "http://localhost:8000"),
     )
 
 
