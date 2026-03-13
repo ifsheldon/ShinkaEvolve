@@ -523,30 +523,22 @@ class TestProposalCoordinator:
         runner.evo_config.num_generations = 10
         runner.next_generation_to_submit = 5
 
-        unblocked = False
+        task = asyncio.create_task(runner._proposal_coordinator_task())
+        await asyncio.sleep(0.15)
 
-        async def _run_coordinator():
-            nonlocal unblocked
-            # The coordinator will block on the pause gate
-            task = asyncio.create_task(runner._proposal_coordinator_task())
-            await asyncio.sleep(0.2)
+        # Still running (blocked on pause)
+        assert not task.done()
 
-            # Still running (blocked on pause)
-            assert not task.done()
+        # Set stop BEFORE unpausing so the coordinator exits immediately
+        # after leaving the pause gate (avoids spinning in the main loop)
+        runner.should_stop.set()
+        runner.interactive_paused.set()
 
-            # Unpause then stop
-            runner.interactive_paused.set()
-            await asyncio.sleep(0.1)
-            runner.should_stop.set()
-            unblocked = True
-
-            try:
-                await asyncio.wait_for(task, timeout=2.0)
-            except asyncio.TimeoutError:
-                task.cancel()
-
-        await _run_coordinator()
-        assert unblocked
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except asyncio.TimeoutError:
+            task.cancel()
+            pytest.fail("Coordinator did not exit after unpause + stop")
 
     @pytest.mark.asyncio
     async def test_stop_breaks_out_of_pause_gate(self, runner):
@@ -573,19 +565,19 @@ class TestProposalCoordinator:
         runner.next_generation_to_submit = 1
 
         call_count = 0
-        original_start = runner._start_proposals
 
         async def _counting_start(n):
             nonlocal call_count
             call_count += n
-            # After proposals, stop to end the test
+            # Step mode auto-pauses after this; set stop so the
+            # coordinator exits at the next pause gate check.
             runner.should_stop.set()
 
         runner._start_proposals = _counting_start
 
         task = asyncio.create_task(runner._proposal_coordinator_task())
         try:
-            await asyncio.wait_for(task, timeout=3.0)
+            await asyncio.wait_for(task, timeout=5.0)
         except asyncio.TimeoutError:
             task.cancel()
 
@@ -605,6 +597,9 @@ class TestKeepAliveLoop:
 
     @pytest.mark.asyncio
     async def test_keepalive_returns_false_on_stop(self, runner):
+        # Target == completed so the "target increased" check doesn't fire
+        runner.completed_generations = 100
+        runner.evo_config.num_generations = 100
         runner.web_controller.process_commands = MagicMock(return_value=[])
         runner.web_controller.stop_requested = False
         runner.web_controller.is_paused = False
@@ -640,6 +635,8 @@ class TestKeepAliveLoop:
 
     @pytest.mark.asyncio
     async def test_keepalive_drains_running_jobs_on_stop(self, runner):
+        runner.completed_generations = 100
+        runner.evo_config.num_generations = 100
         runner.web_controller.process_commands = MagicMock(return_value=[])
         runner.web_controller.stop_requested = False
         runner.web_controller.is_paused = False
@@ -853,3 +850,324 @@ class TestInteractiveRunnerInit:
         assert r._step_mode is False
         assert r._interactive_stop_requested is False
         assert r._is_resuming is False
+
+
+# ========================================================================== #
+# Regression tests for runtime errors encountered during porting             #
+# ========================================================================== #
+
+
+class TestRegressionRunPatchAsyncKwargs:
+    """Bug: _run_patch_async got unexpected keyword argument 'patch_type_override'.
+
+    The interactive runner passes patch_type_override and user_suggestions
+    to _run_patch_async. The base class must accept them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_patch_async_accepts_patch_type_override(self, runner):
+        """_run_patch_async must accept patch_type_override kwarg."""
+        from shinka.core.async_interactive_runner import ShinkaEvolveInteractiveRunner
+
+        # Use a real (non-mocked) _run_patch_async from the base class to
+        # verify the signature accepts the kwargs. We mock the internals it
+        # calls so it doesn't do real work.
+        import inspect
+
+        from shinka.core.async_runner import ShinkaEvolveRunner
+
+        sig = inspect.signature(ShinkaEvolveRunner._run_patch_async)
+        params = list(sig.parameters.keys())
+        assert "patch_type_override" in params, (
+            "_run_patch_async must accept patch_type_override"
+        )
+        assert "user_suggestions" in params, (
+            "_run_patch_async must accept user_suggestions"
+        )
+
+    @pytest.mark.asyncio
+    async def test_interactive_proposal_passes_kwargs_without_error(self, runner):
+        """The full suggest flow must not crash on _run_patch_async kwargs."""
+        parent = _make_program(pid="p1")
+        runner.scheduler.submit_async_nonblocking = AsyncMock(return_value="j1")
+
+        # _run_patch_async is mocked — verify it receives the kwargs
+        task_id = "task-kwargs"
+        runner.active_proposal_tasks[task_id] = MagicMock()
+
+        result = await runner._generate_interactive_proposal_async(
+            generation=1,
+            task_id=task_id,
+            parent_program=parent,
+            archive_programs=[],
+            top_k_programs=[],
+            patch_type_override="full",
+            user_suggestions="try sorting first",
+            action_type="suggest",
+        )
+
+        assert result is not None
+        call_kwargs = runner._run_patch_async.call_args.kwargs
+        assert call_kwargs["patch_type_override"] == "full"
+        assert call_kwargs["user_suggestions"] == "try sorting first"
+
+
+class TestRegressionSampleInspirationsExists:
+    """Bug: 'ProgramDatabase' object has no attribute
+    'sample_inspirations_for_parent_async'.
+
+    The suggest action calls this method on the async DB. It must exist.
+    """
+
+    def test_async_db_has_sample_inspirations_for_parent_async(self):
+        from shinka.database.async_dbase import AsyncProgramDatabase
+
+        assert hasattr(AsyncProgramDatabase, "sample_inspirations_for_parent_async"), (
+            "AsyncProgramDatabase must have sample_inspirations_for_parent_async"
+        )
+
+    def test_sync_db_has_sample_inspirations_for_parent(self):
+        from shinka.database.dbase import ProgramDatabase
+
+        assert hasattr(ProgramDatabase, "sample_inspirations_for_parent"), (
+            "ProgramDatabase must have sample_inspirations_for_parent"
+        )
+
+
+class TestRegressionFinalOperationsUnpack:
+    """Bug: _run_final_operations failed to unpack (success, cost) tuple
+    from perform_final_summary_async.
+    """
+
+    @pytest.mark.asyncio
+    async def test_final_operations_unpacks_summary_tuple(self, runner):
+        """Must not crash when meta_summarizer returns (bool, float)."""
+        runner.meta_summarizer = MagicMock()
+        runner.meta_summarizer.perform_final_summary_async = AsyncMock(
+            return_value=(True, 0.123)
+        )
+        best = _make_program(pid="best", score=5.0)
+        runner.async_db.get_best_program_async = AsyncMock(return_value=best)
+
+        # This would crash with "cannot unpack non-iterable bool" if
+        # the return value wasn't properly destructured
+        await runner._run_final_operations()
+
+    @pytest.mark.asyncio
+    async def test_final_operations_handles_failed_summary(self, runner):
+        runner.meta_summarizer = MagicMock()
+        runner.meta_summarizer.perform_final_summary_async = AsyncMock(
+            return_value=(False, 0.0)
+        )
+        best = _make_program(pid="best", score=1.0)
+        runner.async_db.get_best_program_async = AsyncMock(return_value=best)
+
+        await runner._run_final_operations()
+        runner._save_bandit_state.assert_called_once()
+
+
+class TestRegressionIdleStatus:
+    """Bug: Status reported idle=True while there were still generations
+    remaining. The race: between last job completing and next proposal
+    being created, both running_jobs and active_proposal_tasks were empty.
+    """
+
+    @pytest.mark.asyncio
+    async def test_not_idle_when_generations_remain(self, runner):
+        """idle must be False if completed_generations < num_generations,
+        even when running_jobs and active_proposal_tasks are both empty.
+        """
+        runner.running_jobs = []
+        runner.active_proposal_tasks = {}
+        runner.completed_generations = 29
+        runner.evo_config.num_generations = 30
+
+        best = _make_program(pid="b1", score=5.0)
+        runner.async_db.get_best_program_async = AsyncMock(return_value=best)
+        runner.async_db.get_total_program_count_async = AsyncMock(return_value=29)
+
+        # Capture what write_status is called with
+        captured_kwargs = {}
+
+        def _capture_write_status(**kwargs):
+            captured_kwargs.update(kwargs)
+
+        runner.web_controller.write_status = _capture_write_status
+
+        loop = asyncio.get_event_loop()
+        await runner._write_interactive_status(loop)
+
+        assert captured_kwargs.get("idle") is False, (
+            "Should not report idle when completed_generations < num_generations"
+        )
+
+    @pytest.mark.asyncio
+    async def test_idle_when_all_generations_done(self, runner):
+        """idle must be True when completed_generations >= num_generations
+        and no jobs/proposals are active.
+        """
+        runner.running_jobs = []
+        runner.active_proposal_tasks = {}
+        runner.completed_generations = 30
+        runner.evo_config.num_generations = 30
+
+        best = _make_program(pid="b1", score=5.0)
+        runner.async_db.get_best_program_async = AsyncMock(return_value=best)
+        runner.async_db.get_total_program_count_async = AsyncMock(return_value=30)
+
+        captured_kwargs = {}
+
+        def _capture_write_status(**kwargs):
+            captured_kwargs.update(kwargs)
+
+        runner.web_controller.write_status = _capture_write_status
+
+        loop = asyncio.get_event_loop()
+        await runner._write_interactive_status(loop)
+
+        assert captured_kwargs.get("idle") is True
+
+    @pytest.mark.asyncio
+    async def test_not_idle_when_jobs_still_running(self, runner):
+        """idle must be False when running_jobs is non-empty, even if
+        completed_generations >= num_generations.
+        """
+        runner.running_jobs = [MagicMock()]
+        runner.active_proposal_tasks = {}
+        runner.completed_generations = 30
+        runner.evo_config.num_generations = 30
+
+        best = _make_program(pid="b1", score=5.0)
+        runner.async_db.get_best_program_async = AsyncMock(return_value=best)
+        runner.async_db.get_total_program_count_async = AsyncMock(return_value=30)
+
+        captured_kwargs = {}
+
+        def _capture_write_status(**kwargs):
+            captured_kwargs.update(kwargs)
+
+        runner.web_controller.write_status = _capture_write_status
+
+        loop = asyncio.get_event_loop()
+        await runner._write_interactive_status(loop)
+
+        assert captured_kwargs.get("idle") is False
+
+
+class TestRegressionUserSuggestionsForCross:
+    """Bug: user_suggestions were injected into meta_recs, but the sampler
+    skips meta_recs for cross patch type. Expert guidance for merge actions
+    was silently dropped.
+
+    Fix: user_suggestions are now handled in the sampler as a separate
+    section appended to the user message (not system prompt), so they
+    work for all patch types.
+    """
+
+    def test_sampler_includes_suggestions_in_cross_output(self):
+        """PromptSampler.sample() must include user_suggestions in the
+        user message even when patch_type is 'cross'.
+        """
+        from shinka.core.sampler import PromptSampler
+
+        sampler = PromptSampler.__new__(PromptSampler)
+        sampler.task_sys_msg = "You are evolving code."
+        sampler.patch_types = ["cross"]
+        sampler.patch_type_probs = [1.0]
+        sampler.language = "python"
+        sampler.use_text_feedback = False
+
+        # Minimal context builder mock
+        sampler.context_builder = MagicMock()
+        sampler.context_builder.build_context = MagicMock(return_value=[])
+
+        parent = _make_program(pid="p1", code="def f(): return 1")
+        archive = [_make_program(pid="p2", code="def g(): return 2")]
+
+        _, user_msg, patch_type = sampler.sample(
+            parent=parent,
+            archive_inspirations=archive,
+            top_k_inspirations=[],
+            patch_type_override="cross",
+            user_suggestions="combine both approaches using dynamic programming",
+        )
+
+        assert patch_type == "cross"
+        assert "dynamic programming" in user_msg, (
+            "User suggestions must appear in the user message for cross patches"
+        )
+
+    def test_sampler_includes_suggestions_in_full_output(self):
+        """Sanity check: user_suggestions also work for 'full' patch type."""
+        from shinka.core.sampler import PromptSampler
+
+        sampler = PromptSampler.__new__(PromptSampler)
+        sampler.task_sys_msg = "You are evolving code."
+        sampler.patch_types = ["full"]
+        sampler.patch_type_probs = [1.0]
+        sampler.language = "python"
+        sampler.use_text_feedback = False
+
+        sampler.context_builder = MagicMock()
+        sampler.context_builder.build_context = MagicMock(return_value=[])
+
+        parent = _make_program(pid="p1", code="def f(): return 1")
+
+        _, user_msg, patch_type = sampler.sample(
+            parent=parent,
+            archive_inspirations=[],
+            top_k_inspirations=[],
+            patch_type_override="full",
+            user_suggestions="try using numpy vectorization",
+        )
+
+        assert "numpy vectorization" in user_msg
+
+    def test_sampler_patch_type_override_forces_type(self):
+        """patch_type_override must bypass random sampling."""
+        from shinka.core.sampler import PromptSampler
+
+        sampler = PromptSampler.__new__(PromptSampler)
+        sampler.task_sys_msg = "You are evolving code."
+        sampler.patch_types = ["diff", "full"]
+        sampler.patch_type_probs = [0.5, 0.5]
+        sampler.language = "python"
+        sampler.use_text_feedback = False
+
+        sampler.context_builder = MagicMock()
+        sampler.context_builder.build_context = MagicMock(return_value=[])
+
+        parent = _make_program(pid="p1", code="def f(): return 1")
+
+        # Force cross even though it's not in patch_types
+        _, _, patch_type = sampler.sample(
+            parent=parent,
+            archive_inspirations=[_make_program(pid="a1")],
+            top_k_inspirations=[],
+            patch_type_override="cross",
+        )
+
+        assert patch_type == "cross"
+
+    def test_sampler_rejects_invalid_patch_type_override(self):
+        """Invalid patch_type_override must raise ValueError."""
+        from shinka.core.sampler import PromptSampler
+
+        sampler = PromptSampler.__new__(PromptSampler)
+        sampler.task_sys_msg = "test"
+        sampler.patch_types = ["full"]
+        sampler.patch_type_probs = [1.0]
+        sampler.language = "python"
+        sampler.use_text_feedback = False
+        sampler.context_builder = MagicMock()
+        sampler.context_builder.build_context = MagicMock(return_value=[])
+
+        parent = _make_program(pid="p1")
+
+        with pytest.raises(ValueError, match="Invalid patch type override"):
+            sampler.sample(
+                parent=parent,
+                archive_inspirations=[],
+                top_k_inspirations=[],
+                patch_type_override="nonexistent",
+            )
