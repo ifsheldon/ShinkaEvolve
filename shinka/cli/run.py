@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "Common evo settings via --set:\n"
         "  budget: --set evo.max_api_costs=0.5\n"
         "  models: --set "
-        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n"
+        'evo.llm_models=\'["gpt-5-mini","gemini-3-flash-preview"]\'\n'
         '  patching: --set evo.patch_types=\'["diff","full"]\' '
         "--set evo.patch_type_probs='[0.7,0.3]'\n"
         '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.0,0.5,1.0],'
@@ -87,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--set job.time=00:10:00 "
         "--set job.activate_script=.venv/bin/activate "
         "--set "
-        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n\n"
+        'evo.llm_models=\'["gpt-5-mini","gemini-3-flash-preview"]\'\n\n'
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"

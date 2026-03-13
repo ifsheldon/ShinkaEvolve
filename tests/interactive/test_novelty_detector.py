@@ -169,7 +169,8 @@ class TestNoveltyDetectorDefault:
         """Verifies the Program → ProgramData conversion works."""
         detector = NoveltyDetector()
         parent = _make_program(
-            id="parent", score=100.0,
+            id="parent",
+            score=100.0,
             public_metrics={"x": 1},
             private_metrics={"y": 2},
             embedding=[0.1, 0.2],
@@ -189,12 +190,14 @@ class TestNoveltyDetectorDefault:
 class TestNoveltyDetectorCustomFunction:
     def test_loads_custom_function(self, tmp_path):
         custom_fn = tmp_path / "novelty.py"
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 return NoveltyLevel.MODERATE, {"custom": True}
-        """))
+        """)
+        )
         detector = NoveltyDetector(novelty_function_path=str(custom_fn))
         assert detector.load_error is None
         parent = _make_program(id="parent", score=100.0)
@@ -205,12 +208,14 @@ class TestNoveltyDetectorCustomFunction:
 
     def test_hot_reload_on_file_change(self, tmp_path):
         custom_fn = tmp_path / "novelty.py"
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 return NoveltyLevel.MODERATE, {"version": 1}
-        """))
+        """)
+        )
         detector = NoveltyDetector(novelty_function_path=str(custom_fn))
         parent = _make_program(id="parent", score=100.0)
         child = _make_program(score=101.0)
@@ -220,13 +225,16 @@ class TestNoveltyDetectorCustomFunction:
 
         # Update the file (must change mtime)
         import time
+
         time.sleep(0.05)
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 return NoveltyLevel.HIGH, {"version": 2}
-        """))
+        """)
+        )
 
         result2 = detector.detect(child, parent, [])
         assert result2.level == NoveltyLevel.HIGH
@@ -234,12 +242,14 @@ class TestNoveltyDetectorCustomFunction:
 
     def test_skips_reload_if_unchanged(self, tmp_path):
         custom_fn = tmp_path / "novelty.py"
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 return NoveltyLevel.MODERATE, None
-        """))
+        """)
+        )
         detector = NoveltyDetector(novelty_function_path=str(custom_fn))
         # Record the cached module
         first_module = detector._cached_module
@@ -271,22 +281,26 @@ class TestNoveltyDetectorCustomFunction:
 
     def test_fallback_on_invalid_return_type(self, tmp_path):
         custom_fn = tmp_path / "novelty.py"
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             def detect_novelty(program, parent, inspirations):
                 return "bad"
-        """))
+        """)
+        )
         detector = NoveltyDetector(novelty_function_path=str(custom_fn))
         assert detector.load_error is not None
         assert "must return" in detector.load_error
 
     def test_fallback_on_runtime_exception(self, tmp_path):
         custom_fn = tmp_path / "novelty.py"
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 raise RuntimeError("boom")
-        """))
+        """)
+        )
         detector = NoveltyDetector(novelty_function_path=str(custom_fn))
         # Loads OK (validation with dummy passes because error is conditional)
         # But at runtime it will fail and fall back
@@ -298,14 +312,16 @@ class TestNoveltyDetectorCustomFunction:
         """Even if custom fn raises at detect time, we fall back gracefully."""
         custom_fn = tmp_path / "novelty.py"
         # Write a valid function first
-        custom_fn.write_text(textwrap.dedent("""\
+        custom_fn.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 if program.id != "__validate__":
                     raise RuntimeError("boom at runtime")
                 return NoveltyLevel.NONE, None
-        """))
+        """)
+        )
         detector = NoveltyDetector(novelty_function_path=str(custom_fn))
         assert detector.load_error is None  # validation passed
 
@@ -343,12 +359,14 @@ class TestNoveltyDetectorErrorFile:
 
         # Now create a valid function and reload
         fn_path = tmp_path / "novelty.py"
-        fn_path.write_text(textwrap.dedent("""\
+        fn_path.write_text(
+            textwrap.dedent("""\
             from shinka.core.novelty_detector import NoveltyLevel
 
             def detect_novelty(program, parent, inspirations):
                 return NoveltyLevel.NONE, None
-        """))
+        """)
+        )
         detector2 = NoveltyDetector(
             novelty_function_path=str(fn_path),
             results_dir=str(tmp_path),

@@ -548,9 +548,7 @@ class ProgramDatabase:
         try:
             if "novelty_data" not in columns:
                 logger.info("Adding novelty_data column to programs table")
-                self.cursor.execute(
-                    "ALTER TABLE programs ADD COLUMN novelty_data TEXT"
-                )
+                self.cursor.execute("ALTER TABLE programs ADD COLUMN novelty_data TEXT")
                 self.conn.commit()
                 logger.info("Successfully added novelty_data column")
         except sqlite3.Error as e:

@@ -270,6 +270,7 @@ class TestPayloadNormalization:
 
     def test_deserialize_suggest(self):
         import json
+
         raw = json.dumps({"parent_id": "p1", "prompt": "test", "patch_type": "full"})
         result = _deserialize_command_payload(CommandType.SUGGEST, raw)
         assert isinstance(result, SuggestPayload)

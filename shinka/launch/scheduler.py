@@ -159,7 +159,9 @@ class JobScheduler:
                     *python_cmd,
                 ]
             if _has_value(self.config.activate_script):
-                activate_script = self.config.activate_script.strip().replace('"', '\\"')
+                activate_script = self.config.activate_script.strip().replace(
+                    '"', '\\"'
+                )
                 return [
                     "bash",
                     "-lc",

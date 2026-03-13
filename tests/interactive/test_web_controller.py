@@ -174,8 +174,11 @@ class TestCommandStatusTracking:
 class TestStatusWriting:
     def test_write_status_running(self, controller):
         controller.write_status(
-            generation=5, best_score=10.0, queued_jobs=3,
-            total_programs=20, target_generations=100,
+            generation=5,
+            best_score=10.0,
+            queued_jobs=3,
+            total_programs=20,
+            target_generations=100,
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.RUNNING.value
@@ -184,7 +187,9 @@ class TestStatusWriting:
     def test_write_status_paused(self, controller):
         controller.pause()
         controller.write_status(
-            generation=5, best_score=10.0, queued_jobs=0,
+            generation=5,
+            best_score=10.0,
+            queued_jobs=0,
             total_programs=20,
         )
         status = controller.interactive_db.read_status()
@@ -196,7 +201,9 @@ class TestStatusWriting:
         controller.interactive_db.push_command(CommandType.STOP)
         controller.process_commands()
         controller.write_status(
-            generation=5, best_score=10.0, queued_jobs=0,
+            generation=5,
+            best_score=10.0,
+            queued_jobs=0,
             total_programs=20,
         )
         status = controller.interactive_db.read_status()
@@ -204,16 +211,22 @@ class TestStatusWriting:
 
     def test_write_status_waiting_for_start(self, controller):
         controller.write_status(
-            generation=0, best_score=0.0, queued_jobs=0,
-            total_programs=0, waiting_for_start=True,
+            generation=0,
+            best_score=0.0,
+            queued_jobs=0,
+            total_programs=0,
+            waiting_for_start=True,
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.WAITING_FOR_START.value
 
     def test_write_status_idle(self, controller):
         controller.write_status(
-            generation=10, best_score=50.0, queued_jobs=0,
-            total_programs=100, idle=True,
+            generation=10,
+            best_score=50.0,
+            queued_jobs=0,
+            total_programs=100,
+            idle=True,
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.IDLE.value
@@ -222,8 +235,11 @@ class TestStatusWriting:
         """Paused should take priority over idle (bug fix a06e6fd)."""
         controller.pause()
         controller.write_status(
-            generation=10, best_score=50.0, queued_jobs=0,
-            total_programs=100, idle=True,
+            generation=10,
+            best_score=50.0,
+            queued_jobs=0,
+            total_programs=100,
+            idle=True,
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.PAUSED.value
@@ -240,7 +256,10 @@ class TestStatusWriting:
 
     def test_heartbeat_written_on_status(self, controller):
         controller.write_status(
-            generation=1, best_score=0.0, queued_jobs=0, total_programs=0,
+            generation=1,
+            best_score=0.0,
+            queued_jobs=0,
+            total_programs=0,
         )
         hb = controller.interactive_db.read_heartbeat()
         assert hb is not None
@@ -252,8 +271,11 @@ class TestStatusWriting:
 
     def test_is_resuming_propagated(self, controller):
         controller.write_status(
-            generation=5, best_score=10.0, queued_jobs=0,
-            total_programs=20, is_resuming=True,
+            generation=5,
+            best_score=10.0,
+            queued_jobs=0,
+            total_programs=20,
+            is_resuming=True,
         )
         status = controller.interactive_db.read_status()
         assert status.is_resuming is True
@@ -273,8 +295,12 @@ class TestStatePriority:
         controller.interactive_db.push_command(CommandType.STOP)
         controller.process_commands()
         controller.write_status(
-            generation=0, best_score=0, queued_jobs=0,
-            total_programs=0, idle=True, waiting_for_start=True,
+            generation=0,
+            best_score=0,
+            queued_jobs=0,
+            total_programs=0,
+            idle=True,
+            waiting_for_start=True,
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.WAITING_FOR_START.value
@@ -283,8 +309,11 @@ class TestStatePriority:
         """The 'waiting' flag (manual continue mode) overrides paused."""
         controller.pause()
         controller.write_status(
-            generation=0, best_score=0, queued_jobs=0,
-            total_programs=0, waiting=True,
+            generation=0,
+            best_score=0,
+            queued_jobs=0,
+            total_programs=0,
+            waiting=True,
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.WAITING.value

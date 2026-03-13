@@ -188,7 +188,7 @@ def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeyp
             "evo_config:\n"
             "  num_generations: 999\n"
             "  results_dir: from_config\n"
-            "  llm_models: [\"gpt-5-nano\"]\n"
+            '  llm_models: ["gpt-5-nano"]\n'
         ),
         encoding="utf-8",
     )

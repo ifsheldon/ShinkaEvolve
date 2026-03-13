@@ -41,7 +41,9 @@ class TestSetTargetPayload:
             SetTargetPayload(target_generations=-5)
 
     def test_rejects_above_max(self):
-        with pytest.raises(ValidationError, match=f"must be <= {MAX_TARGET_GENERATIONS}"):
+        with pytest.raises(
+            ValidationError, match=f"must be <= {MAX_TARGET_GENERATIONS}"
+        ):
             SetTargetPayload(target_generations=MAX_TARGET_GENERATIONS + 1)
 
 
@@ -52,7 +54,9 @@ class TestSetTargetPayload:
 
 class TestSuggestPayload:
     def test_valid_suggest(self):
-        p = SuggestPayload(parent_id="abc-123", prompt="try something", patch_type="full")
+        p = SuggestPayload(
+            parent_id="abc-123", prompt="try something", patch_type="full"
+        )
         assert p.parent_id == "abc-123"
         assert p.prompt == "try something"
         assert p.patch_type == "full"

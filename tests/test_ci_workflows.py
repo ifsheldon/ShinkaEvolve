@@ -28,5 +28,8 @@ def test_pytest_markers_are_registered() -> None:
     pyproject = _read("pyproject.toml")
 
     assert 'addopts = "--strict-markers"' in pyproject
-    assert 'integration: live external/provider integration coverage' in pyproject
-    assert 'requires_secrets: tests that need CI secrets or private credentials' in pyproject
+    assert "integration: live external/provider integration coverage" in pyproject
+    assert (
+        "requires_secrets: tests that need CI secrets or private credentials"
+        in pyproject
+    )

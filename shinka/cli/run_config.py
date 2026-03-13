@@ -59,8 +59,8 @@ def load_optional_yaml_config(
     if not isinstance(loaded, dict):
         raise ValueError(f"Config file must contain a YAML object: {config_path}")
 
-    allowed_top_keys = set(_NAMESPACE_ALIASES) | set(_RUNNER_INT_KEYS) | set(
-        _RUNNER_BOOL_KEYS
+    allowed_top_keys = (
+        set(_NAMESPACE_ALIASES) | set(_RUNNER_INT_KEYS) | set(_RUNNER_BOOL_KEYS)
     )
     unknown_top_keys = sorted(key for key in loaded if key not in allowed_top_keys)
     if unknown_top_keys:
