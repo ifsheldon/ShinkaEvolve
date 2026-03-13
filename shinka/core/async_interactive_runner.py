@@ -681,9 +681,23 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 await asyncio.sleep(0.5)
 
             # --- Track the job --------------------------------------------
+            running_job.program_id = str(uuid.uuid4())
             self.running_jobs.append(running_job)
             self.submitted_jobs[str(job_id)] = running_job
             self.slot_available.set()
+
+            # Notify frontend that a program is queued for evaluation
+            code_content = await self._read_file_async(exec_fname) or ""
+            await self.event_notifier.notify_queued(
+                program_id=running_job.program_id,
+                parent_id=parent_program.id,
+                generation=generation,
+                code=code_content,
+                code_diff=code_diff,
+                metadata=meta_patch_data,
+                archive_inspiration_ids=running_job.archive_insp_ids,
+                top_k_inspiration_ids=running_job.top_k_insp_ids,
+            )
 
             logger.info(
                 "Interactive %s: submitted gen %d for eval (parent=%s, cost=$%.4f)",
@@ -874,9 +888,7 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                     timeout=10.0,
                 )
             except asyncio.TimeoutError:
-                logger.warning(
-                    "Keep-alive tasks did not shut down within 10s"
-                )
+                logger.warning("Keep-alive tasks did not shut down within 10s")
             logger.info("Interactive: async keep-alive ended")
 
         return should_reenter

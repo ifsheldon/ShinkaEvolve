@@ -70,3 +70,18 @@ class EvolutionConfig:
 
     # Post-evaluation novelty detection
     novelty_function_path: Optional[str] = None  # Path to custom novelty.py
+
+    # Push-based callback URL for real-time frontend updates.
+    # When set, the runner POSTs lifecycle events (program.queued,
+    # program.generated) to this URL so the evolve-shell backend can
+    # push them to connected frontends via WebSocket.
+    # Falls back to the EVOLVE_SHELL_URL environment variable if not
+    # explicitly set, so co-located setups "just work" when start.py
+    # exports the variable.
+    callback_url: Optional[str] = None
+
+    def __post_init__(self):
+        import os
+
+        if self.callback_url is None:
+            self.callback_url = os.environ.get("EVOLVE_SHELL_URL")

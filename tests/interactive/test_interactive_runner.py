@@ -89,6 +89,10 @@ def runner(tmp_path):
         r.novelty_judge = None
         r.prompt_sampler = MagicMock()
 
+        from shinka.core.event_notifier import EventNotifier
+
+        r.event_notifier = EventNotifier(callback_url=None, db_path="test.db")
+
         r.running_jobs: List = []
         r.active_proposal_tasks: Dict[str, asyncio.Task] = {}
         r.submitted_jobs: Dict[str, Any] = {}
@@ -169,7 +173,10 @@ class TestHandleSuggestAction:
         runner.async_db.sample_inspirations_for_parent_async.assert_awaited_once()
 
         # A proposal task should have been created
-        assert len(runner.active_proposal_tasks) == 1 or runner._run_patch_async.await_count >= 0
+        assert (
+            len(runner.active_proposal_tasks) == 1
+            or runner._run_patch_async.await_count >= 0
+        )
 
     @pytest.mark.asyncio
     async def test_suggest_missing_parent_logs_error_no_crash(self, runner):
@@ -291,7 +298,6 @@ class TestHandleMergeAction:
 
 
 class TestHandleSetTargetAction:
-
     @pytest.mark.asyncio
     async def test_set_target_updates_config(self, runner):
         runner.evo_config.num_generations = 50
@@ -314,7 +320,6 @@ class TestHandleSetTargetAction:
 
 
 class TestGenerateInteractiveProposal:
-
     @pytest.mark.asyncio
     async def test_successful_proposal_returns_running_job(self, runner):
         parent = _make_program(pid="parent-1")
@@ -474,7 +479,6 @@ class TestGenerateInteractiveProposal:
 
 
 class TestGenerationSlotAllocation:
-
     @pytest.mark.asyncio
     async def test_suggest_increments_generation_counter(self, runner):
         parent = _make_program(pid="p1")
@@ -515,7 +519,6 @@ class TestGenerationSlotAllocation:
 
 
 class TestProposalCoordinator:
-
     @pytest.mark.asyncio
     async def test_pause_gate_blocks_until_unpaused(self, runner):
         """When paused, the coordinator should block until un-paused."""
@@ -594,7 +597,6 @@ class TestProposalCoordinator:
 
 
 class TestKeepAliveLoop:
-
     @pytest.mark.asyncio
     async def test_keepalive_returns_false_on_stop(self, runner):
         # Target == completed so the "target increased" check doesn't fire
@@ -662,7 +664,6 @@ class TestKeepAliveLoop:
 
 
 class TestInteractiveCommandTask:
-
     @pytest.mark.asyncio
     async def test_stop_command_sets_should_stop(self, runner):
         call_count = 0
@@ -744,7 +745,6 @@ class TestInteractiveCommandTask:
 
 
 class TestStatusWriteRetries:
-
     @pytest.mark.asyncio
     async def test_succeeds_on_first_try(self, runner):
         writer = MagicMock()
@@ -773,9 +773,7 @@ class TestStatusWriteRetries:
     async def test_gives_up_after_max_retries(self, runner):
         import sqlite3
 
-        writer = MagicMock(
-            side_effect=sqlite3.Error("permanently locked")
-        )
+        writer = MagicMock(side_effect=sqlite3.Error("permanently locked"))
         loop = asyncio.get_event_loop()
 
         # Should not raise — logs error and returns
@@ -803,7 +801,6 @@ class TestStatusWriteRetries:
 
 
 class TestRunFinalOperations:
-
     @pytest.mark.asyncio
     async def test_no_embedding_no_summarizer(self, runner):
         """Should complete without error when both are disabled."""
@@ -833,7 +830,6 @@ class TestRunFinalOperations:
 
 
 class TestInteractiveRunnerInit:
-
     def test_init_sets_interactive_defaults(self):
         """Verify the interactive runner sets its own state in __init__."""
         from shinka.core.async_interactive_runner import ShinkaEvolveInteractiveRunner

@@ -69,7 +69,9 @@ def _print_gradient_logo_and_mirror(log_path: Optional[Path] = None) -> None:
 
     try:
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n")
+            handle.write(
+                shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n"
+            )
     except Exception:
         # Never break startup output if log write fails.
         pass
@@ -106,7 +108,9 @@ class RichTeeConsole:
                 if not rendered:
                     return
                 with self._log_path.open("a", encoding="utf-8") as handle:
-                    handle.write(rendered if rendered.endswith("\n") else f"{rendered}\n")
+                    handle.write(
+                        rendered if rendered.endswith("\n") else f"{rendered}\n"
+                    )
         except Exception as e:
             logger.debug(f"Failed to mirror rich output to log file: {e}")
 
@@ -130,6 +134,7 @@ class AsyncRunningJob:
     novelty_cost: float = 0.0  # Track novelty checking cost
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
     db_retry_count: int = 0  # Track number of DB write retry attempts
+    program_id: str = ""  # Pre-generated UUID, set at queue time for callback matching
 
 
 class ShinkaEvolveRunner:
@@ -330,6 +335,14 @@ class ShinkaEvolveRunner:
         # Job scheduler
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type, config=job_config, verbose=verbose
+        )
+
+        # Event notifier for push-based frontend updates
+        from shinka.core.event_notifier import EventNotifier
+
+        self.event_notifier = EventNotifier(
+            callback_url=evo_config.callback_url,
+            db_path=str(db_config.db_path),
         )
 
         # Prompt sampler
@@ -576,7 +589,9 @@ class ShinkaEvolveRunner:
 
             # Warn if settings seem too high
             if max_evaluation_jobs + max_proposal_jobs > cpu_count:
-                logger.warning("⚠️  High concurrency settings may cause CPU oversubscription")
+                logger.warning(
+                    "⚠️  High concurrency settings may cause CPU oversubscription"
+                )
             if max_evaluation_jobs + max_proposal_jobs > memory_based_limit:
                 logger.warning(
                     f"⚠️  High concurrency settings may cause memory pressure (limit: {memory_based_limit})"
@@ -845,6 +860,9 @@ class ShinkaEvolveRunner:
 
         # Update database config with results directory path
         self.db_config.db_path = str(db_path)
+
+        # Keep event notifier in sync with the actual db path
+        self.event_notifier.db_path = str(db_path)
 
         # Reinitialize database with updated path
         self.db = ProgramDatabase(
@@ -1315,6 +1333,9 @@ class ShinkaEvolveRunner:
 
         # Add to database
         await self.async_db.add_program_async(initial_program)
+
+        # Notify frontend about the initial program
+        await self.event_notifier.notify_generated(initial_program)
 
         # Add initial program costs to in-memory total for accurate budget tracking
         initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
@@ -2426,8 +2447,22 @@ class ShinkaEvolveRunner:
                         return None
 
                 # Track job in both running list and submitted registry
+                running_job.program_id = str(uuid.uuid4())
                 self.running_jobs.append(running_job)
                 self.submitted_jobs[str(job_id)] = running_job
+
+                # Notify frontend that a program is queued for evaluation
+                code_content = await self._read_file_async(exec_fname) or ""
+                await self.event_notifier.notify_queued(
+                    program_id=running_job.program_id,
+                    parent_id=parent_program.id,
+                    generation=generation,
+                    code=code_content,
+                    code_diff=code_diff,
+                    metadata=meta_patch_data,
+                    archive_inspiration_ids=running_job.archive_insp_ids,
+                    top_k_inspiration_ids=running_job.top_k_insp_ids,
+                )
 
                 # Trigger immediate job status check to catch fast-completing jobs
                 self.slot_available.set()
@@ -3116,7 +3151,7 @@ class ShinkaEvolveRunner:
 
             # Create program from results (or defaults if results missing)
             program = Program(
-                id=str(uuid.uuid4()),
+                id=job.program_id or str(uuid.uuid4()),
                 code=await self._read_file_async(job.exec_fname) or "",
                 generation=job.generation,
                 correct=correct_val,
@@ -3156,6 +3191,9 @@ class ShinkaEvolveRunner:
                 logger.info(
                     f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
                 )
+
+                # Notify frontend that the program has been generated
+                await self.event_notifier.notify_generated(program)
 
                 # --- Post-evaluation novelty detection ---
                 try:
@@ -3806,6 +3844,9 @@ class ShinkaEvolveRunner:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to recompute prompt percentiles: {e}")
+
+            # Cleanup event notifier (close HTTP client)
+            await self.event_notifier.close()
 
             # Cleanup database
             await self.async_db.close_async()
