@@ -59,8 +59,10 @@ def main(program_path: str, results_dir: str) -> None:
     )
 
     tag = "OK" if correct else "FAIL"
-    print(f"[evaluate] {tag}  score={metrics.get('combined_score', '?')}  "
-          f"error={error_msg}")
+    print(
+        f"[evaluate] {tag}  score={metrics.get('combined_score', '?')}  "
+        f"error={error_msg}"
+    )
 
 
 if __name__ == "__main__":

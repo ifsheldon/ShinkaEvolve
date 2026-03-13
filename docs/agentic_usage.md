@@ -3,25 +3,25 @@
 This guide shows how to run Shinka with coding agents using the project skills:
 
 - `shinka-setup`: scaffold task files (`evaluate.py`, `initial.<ext>`, optional run config)
+- `shinka-convert`: snapshot an existing repo into a Shinka task directory
 - `shinka-run`: launch and iterate evolution batches via `shinka_run`
+- `shinka-inspect`: load top-performing programs into a compact context bundle
 
 It covers:
 - installing Shinka
 - installing Claude Code and/or Codex CLI
-- copying skill files to the right skill directories
-- running a practical setup -> run loop
+- installing the skills from this GitHub repo with `npx skills add`
+- running a practical setup -> run -> inspect loop
 
 ## 1) Install Shinka
 
 From a clean machine:
 
 ```bash
-git clone https://github.com/SakanaAI/ShinkaEvolve.git
-cd ShinkaEvolve
+pip install shinka-evolve
 
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e .
+# or
+uv pip install shinka-evolve
 ```
 
 Set API keys (example):
@@ -49,32 +49,51 @@ npm install -g @openai/codex
 codex --version
 ```
 
-## 3) Copy Skills to Agent Skill Folders
+## 3) Install Skills from the Repo with `npx skills add`
 
-Skill source files in this repo:
+The Shinka skills live directly in this repo under `skills/`. You do not need to copy files by hand or publish a separate npm package.
 
-- `skills/shinka-setup/SKILL.md`
-- `skills/shinka-run/SKILL.md`
-- optional helper scripts for setup skill:
-  - `skills/shinka-setup/scripts/run_evo.py`
-  - `skills/shinka-setup/scripts/shinka.yaml`
-
-### Claude Code skill path
+Install all current Shinka skills globally for Claude Code and Codex:
 
 ```bash
-mkdir -p ~/.claude/skills/shinka-setup ~/.claude/skills/shinka-run
-cp skills/shinka-setup/SKILL.md ~/.claude/skills/shinka-setup/SKILL.md
-cp -R skills/shinka-setup/scripts ~/.claude/skills/shinka-setup/
-cp skills/shinka-run/SKILL.md ~/.claude/skills/shinka-run/SKILL.md
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -g -a claude-code -a codex -y
 ```
 
-### Codex skill path
+This installs from the GitHub repo source. The explicit `--skill '*'` makes "install all skills" unambiguous and avoids interactive prompts.
+
+Installed skills currently include:
+
+- `shinka-setup`
+- `shinka-convert`
+- `shinka-run`
+- `shinka-inspect`
+
+### Project-local install
+
+Use this if you want the skills installed only for the current repo:
 
 ```bash
-mkdir -p ~/.codex/skills/shinka-setup ~/.codex/skills/shinka-run
-cp skills/shinka-setup/SKILL.md ~/.codex/skills/shinka-setup/SKILL.md
-cp -R skills/shinka-setup/scripts ~/.codex/skills/shinka-setup/
-cp skills/shinka-run/SKILL.md ~/.codex/skills/shinka-run/SKILL.md
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -a claude-code -a codex -y
+```
+
+Typical project paths:
+
+- Claude Code: `.claude/skills/`
+- Codex: `.agents/skills/`
+
+### Global install paths
+
+For the global install command above, the relevant skill roots are:
+
+- Claude Code: `~/.claude/skills/`
+- Codex: `~/.codex/skills/`
+
+### Install one skill only
+
+For a narrower install:
+
+```bash
+npx skills add SakanaAI/ShinkaEvolve --skill shinka-setup -g -a claude-code -a codex -y
 ```
 
 ## 4) Setup Skill Walkthrough (`shinka-setup`)
@@ -121,8 +140,8 @@ shinka_run \
   --results_dir results/my_task_agent \
   --num_generations 20 \
   --set evo.max_api_costs=0.5 \
-  --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]' \
-  --set db.num_islands=3 \
+  --set evo.llm_models='["gpt-5-mini","gemini-3-flash-preview"]' \
+  --set db.num_islands=2 \
   --set db.parent_selection_strategy=weighted
 ```
 
@@ -132,7 +151,35 @@ Illustration (run flow):
 
 ![Claude run step 2](media/claude_run_2.png)
 
-## 6) Batch Iteration Rules (Important)
+## 6) Inspect Skill Walkthrough (`shinka-inspect`)
+
+Use `shinka-inspect` after one or more batches to generate an agent-ready context file.
+
+Minimal:
+
+```bash
+python skills/shinka-inspect/scripts/inspect_best_programs.py \
+  --results-dir results/my_task_agent \
+  --k 5
+```
+
+With filters and explicit output:
+
+```bash
+python skills/shinka-inspect/scripts/inspect_best_programs.py \
+  --results-dir results/my_task_agent \
+  --k 8 \
+  --min-generation 10 \
+  --max-code-chars 5000 \
+  --out results/my_task_agent/inspect/top_programs.md
+```
+
+Output:
+- default file: `results/my_task_agent/shinka_inspect_context.md`
+- contains ranking + code snippets for top programs
+- designed to be loaded directly into coding-agent context
+
+## 7) Batch Iteration Rules (Important)
 
 When using `shinka-run` skill:
 
@@ -140,18 +187,20 @@ When using `shinka-run` skill:
 - keep `--results_dir` the same across continuation batches so prior state can reload
 - change `--results_dir` only when intentionally forking a new run
 
-## 7) Quick Validation Checklist
+## 8) Quick Validation Checklist
 
 Before first run:
 
 - `shinka_run --help` works
 - task dir has `evaluate.py` + `initial.<ext>`
 - API keys are available in environment
-- skill files are installed under `~/.claude/skills` and/or `~/.codex/skills`
+- `npx skills list` shows the installed Shinka skills
+- for global installs, skills appear under `~/.claude/skills/` and/or `~/.codex/skills/`
+- for project installs, skills appear under `.claude/skills/` and/or `.agents/skills/`
 
 After each batch:
 
 - check run artifacts/logs under the chosen `results_dir`
 - review score and correctness trend
+- run `shinka-inspect` and review the generated context markdown
 - choose next batch config (budget, models, islands, attempts, generations)
-

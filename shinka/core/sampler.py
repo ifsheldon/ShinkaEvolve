@@ -19,6 +19,7 @@ from shinka.prompts import (
     format_error_output_section,
 )
 from shinka.prompts.prompts_init import INIT_SYSTEM_MSG, INIT_USER_MSG
+from shinka.defaults import default_patch_type_probs, default_patch_types
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,9 +38,9 @@ class PromptSampler:
         ] = "ascending",
     ):
         if patch_types is None:
-            patch_types = ["diff"]
+            patch_types = default_patch_types()
         if patch_type_probs is None:
-            patch_type_probs = [1.0]
+            patch_type_probs = default_patch_type_probs()
 
         self.task_sys_msg = task_sys_msg
         self.language = language
@@ -211,13 +212,16 @@ class PromptSampler:
         # Add expert guidance from interactive suggestions if provided
         suggestions_section = ""
         if user_suggestions:
-            suggestions_section = (
-                "\n\n# Expert Guidance\n"
-                "A human expert has reviewed the current program and "
-                "provided the following guidance. You MUST follow this "
-                "guidance while still producing a valid, working program.\n\n"
-                f"{user_suggestions.strip()}\n"
-            )
+            suggestions_section = f"""
+
+# Expert Guidance
+A human expert has reviewed the current program and provided the following guidance. You MUST follow this guidance while still producing a valid, working program.
+
+```
+{user_suggestions.strip()}
+```
+
+"""
 
         return (
             sys_msg,

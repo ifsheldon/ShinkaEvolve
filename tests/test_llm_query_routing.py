@@ -7,7 +7,11 @@ def test_query_routes_local_openai(monkeypatch):
     monkeypatch.setattr(
         query_module,
         "get_client_llm",
-        lambda model_name, structured_output=False: ("client", "local-model", "local_openai"),
+        lambda model_name, structured_output=False: (
+            "client",
+            "local-model",
+            "local_openai",
+        ),
     )
     called = {}
 
@@ -42,7 +46,11 @@ def test_query_async_routes_local_openai(monkeypatch):
     monkeypatch.setattr(
         query_module,
         "get_async_client_llm",
-        lambda model_name, structured_output=False: ("client", "local-model", "local_openai"),
+        lambda model_name, structured_output=False: (
+            "client",
+            "local-model",
+            "local_openai",
+        ),
     )
     called = {}
 
@@ -60,7 +68,9 @@ def test_query_async_routes_local_openai(monkeypatch):
         called["model"] = model
         return "ok-async"
 
-    monkeypatch.setattr(query_module, "query_local_openai_async", _fake_local_query_async)
+    monkeypatch.setattr(
+        query_module, "query_local_openai_async", _fake_local_query_async
+    )
 
     result = asyncio.run(
         query_module.query_async(

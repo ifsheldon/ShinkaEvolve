@@ -5,16 +5,22 @@ Provides non-blocking database access for high-throughput proposal generation.
 
 import asyncio
 import logging
+import sqlite3
 import time
 import threading
 import traceback
-from typing import List, Optional, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from typing import Any, Dict, List, Optional, Tuple
 
 from .complexity import analyze_code_metrics
 from .dbase import Program, ProgramDatabase
 
 logger = logging.getLogger(__name__)
+
+EXPECTED_ASYNC_DB_EXCEPTIONS = (sqlite3.Error, OSError, RuntimeError, ValueError)
+CODE_ANALYSIS_EXCEPTIONS = (OSError, RuntimeError, SyntaxError, ValueError)
+DB_CLOSE_EXCEPTIONS = (sqlite3.Error, OSError)
 
 
 # Debugging utilities
@@ -134,6 +140,79 @@ class AsyncProgramDatabase:
         if self.enable_deadlock_debugging and op_id is not None:
             db_debugger.track_end(op_id, success=success)
 
+    @staticmethod
+    def _prepare_program_for_write(
+        program: Program,
+        *,
+        parent_id: Optional[str] = None,
+        archive_insp_ids: Optional[List[str]] = None,
+        top_k_insp_ids: Optional[List[str]] = None,
+        code_diff: Optional[str] = None,
+        meta_patch_data: Optional[Dict[str, Any]] = None,
+        code_embedding: Optional[List[float]] = None,
+        embed_cost: float = 0.0,
+        complexity_override: Optional[float] = None,
+        code_metrics: Optional[Dict[str, Any]] = None,
+    ) -> Program:
+        """Return a typed Program payload for DB writes.
+
+        The async runner historically threaded extra write-time fields separately
+        from the dataclass instance, and this layer patched them in with dynamic
+        ``setattr`` calls. Normalize them into real Program fields and metadata
+        instead so the stored shape is explicit and statically visible.
+        """
+        metadata = dict(program.metadata or {})
+        if meta_patch_data:
+            metadata.update(meta_patch_data)
+        if code_metrics is not None:
+            metadata["code_analysis_metrics"] = code_metrics
+        metadata["embed_cost"] = embed_cost
+
+        updated_program = replace(
+            program,
+            parent_id=parent_id if parent_id is not None else program.parent_id,
+            archive_inspiration_ids=list(
+                archive_insp_ids
+                if archive_insp_ids is not None
+                else program.archive_inspiration_ids
+            ),
+            top_k_inspiration_ids=list(
+                top_k_insp_ids
+                if top_k_insp_ids is not None
+                else program.top_k_inspiration_ids
+            ),
+            code_diff=code_diff if code_diff is not None else program.code_diff,
+            complexity=(
+                complexity_override
+                if complexity_override is not None
+                else program.complexity
+            ),
+            embedding=list(
+                code_embedding if code_embedding is not None else program.embedding
+            ),
+            metadata=metadata,
+        )
+
+        # Keep the caller-visible object aligned with what is written to the DB.
+        program.parent_id = updated_program.parent_id
+        program.archive_inspiration_ids = updated_program.archive_inspiration_ids
+        program.top_k_inspiration_ids = updated_program.top_k_inspiration_ids
+        program.code_diff = updated_program.code_diff
+        program.complexity = updated_program.complexity
+        program.embedding = updated_program.embedding
+        program.metadata = updated_program.metadata
+        return updated_program
+
+    @staticmethod
+    def _close_thread_db(thread_db: Optional[ProgramDatabase], *, context: str) -> None:
+        """Close a thread-local database and log expected shutdown failures."""
+        if thread_db is None:
+            return
+        try:
+            thread_db.close()
+        except DB_CLOSE_EXCEPTIONS as exc:
+            logger.warning("Error closing thread database in %s: %s", context, exc)
+
     async def _deadlock_monitor(self):
         """Background task to monitor for deadlocks."""
         while True:
@@ -150,8 +229,10 @@ class AsyncProgramDatabase:
             except asyncio.CancelledError:
                 logger.info("🛑 Deadlock monitoring stopped")
                 break
-            except Exception as e:
-                logger.error(f"Error in deadlock monitoring: {e}")
+            except Exception:
+                # Background monitor is a process boundary; keep it alive, but log the
+                # full traceback instead of treating programmer bugs as routine noise.
+                logger.exception("Error in deadlock monitoring")
 
     async def sample_async(
         self,
@@ -187,6 +268,10 @@ class AsyncProgramDatabase:
                         from .dbase import ProgramDatabase
 
                         thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                        if hasattr(thread_db, "set_display_console"):
+                            thread_db.set_display_console(
+                                getattr(self.sync_db, "display_console", None)
+                            )
                         result = thread_db.sample(
                             target_generation=target_generation,
                             novelty_attempt=novelty_attempt,
@@ -196,25 +281,59 @@ class AsyncProgramDatabase:
                         )
                         self._debug_track_end(thread_op_id, success=True)
                         return result
-                    except Exception as e:
+                    except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
                         self._debug_track_end(thread_op_id, success=False)
-                        logger.error(f"Error in sample_thread_safe: {e}")
+                        logger.error("Error in sample_thread_safe: %s", exc)
+                        raise
+                    except Exception:
+                        self._debug_track_end(thread_op_id, success=False)
                         raise
                     finally:
-                        if thread_db:
-                            try:
-                                thread_db.close()
-                            except Exception as e:
-                                logger.warning(f"Error closing thread database: {e}")
+                        self._close_thread_db(thread_db, context="sample_thread_safe")
 
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(self.executor, sample_thread_safe)
                 self._debug_track_end(op_id, success=True)
                 return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async sample: {e}")
+            logger.error("Error in async sample: %s", exc)
             raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
+
+    async def sample_inspirations_for_parent_async(
+        self,
+        parent: "Program",
+        num_archive_insp: int,
+        num_top_k_insp: int,
+    ) -> Tuple[List["Program"], List["Program"]]:
+        """Async version of sample_inspirations_for_parent.
+
+        Used by interactive actions (suggest/merge) where the parent is
+        chosen by the expert rather than by the sampling strategy.
+        """
+        async with self._db_semaphore:
+
+            def _thread_safe():
+                from .dbase import ProgramDatabase
+
+                thread_db = None
+                try:
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    return thread_db.sample_inspirations_for_parent(
+                        parent, num_archive_insp, num_top_k_insp
+                    )
+                finally:
+                    if thread_db:
+                        try:
+                            thread_db.close()
+                        except Exception as e:
+                            logger.warning(f"Error closing thread database: {e}")
+
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(self.executor, _thread_safe)
 
     async def sample_with_fix_mode_async(
         self,
@@ -249,6 +368,10 @@ class AsyncProgramDatabase:
                         from .dbase import ProgramDatabase
 
                         thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                        if hasattr(thread_db, "set_display_console"):
+                            thread_db.set_display_console(
+                                getattr(self.sync_db, "display_console", None)
+                            )
                         result = thread_db.sample_with_fix_mode(
                             target_generation=target_generation,
                             novelty_attempt=novelty_attempt,
@@ -258,16 +381,17 @@ class AsyncProgramDatabase:
                         )
                         self._debug_track_end(thread_op_id, success=True)
                         return result
-                    except Exception as e:
+                    except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
                         self._debug_track_end(thread_op_id, success=False)
-                        logger.error(f"Error in sample_with_fix_thread_safe: {e}")
+                        logger.error("Error in sample_with_fix_thread_safe: %s", exc)
+                        raise
+                    except Exception:
+                        self._debug_track_end(thread_op_id, success=False)
                         raise
                     finally:
-                        if thread_db:
-                            try:
-                                thread_db.close()
-                            except Exception as e:
-                                logger.warning(f"Error closing thread database: {e}")
+                        self._close_thread_db(
+                            thread_db, context="sample_with_fix_thread_safe"
+                        )
 
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
@@ -275,9 +399,12 @@ class AsyncProgramDatabase:
                 )
                 self._debug_track_end(op_id, success=True)
                 return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async sample_with_fix_mode: {e}")
+            logger.error("Error in async sample_with_fix_mode: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def update_beam_search_parent_async(self, parent_id: str) -> None:
@@ -311,18 +438,19 @@ class AsyncProgramDatabase:
                         # Also update the in-memory state on sync_db for consistency
                         self.sync_db.beam_search_parent_id = parent_id
                     finally:
-                        if thread_db:
-                            try:
-                                thread_db.close()
-                            except Exception:
-                                pass
+                        self._close_thread_db(
+                            thread_db, context="update_beam_search_parent_async"
+                        )
 
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(self.executor, update_thread_safe)
                 self._debug_track_end(op_id, success=True)
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.warning(f"Could not update beam_search_parent_id: {e}")
+            logger.warning("Could not update beam_search_parent_id: %s", exc)
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
 
     async def add_program_async(
         self,
@@ -358,6 +486,8 @@ class AsyncProgramDatabase:
         try:
             # Prepare program data outside the lock to reduce lock time
             await asyncio.sleep(0)  # Yield control to event loop
+            computed_complexity: Optional[float] = None
+            code_metrics: Optional[Dict[str, Any]] = None
 
             # Asynchronously calculate complexity if not provided
             if program.complexity == 0.0:
@@ -371,35 +501,32 @@ class AsyncProgramDatabase:
                         program.code,
                         language,
                     )
-                    program.complexity = code_metrics.get("complexity_score", 0.0)
-                    if program.metadata is None:
-                        program.metadata = {}
-                    program.metadata["code_analysis_metrics"] = code_metrics
-                except Exception as e:
+                    computed_complexity = code_metrics.get("complexity_score", 0.0)
+                except CODE_ANALYSIS_EXCEPTIONS as exc:
                     logger.warning(
-                        f"Could not calculate complexity for program {program.id}: {e}"
+                        "Could not calculate complexity for program %s: %s",
+                        program.id,
+                        exc,
                     )
                     # Fallback to length
-                    program.complexity = float(len(program.code))
+                    computed_complexity = float(len(program.code))
 
-            # Set additional metadata using setattr for dynamic attributes
-            if parent_id:
-                setattr(program, "parent_id", parent_id)
-            if archive_insp_ids:
-                setattr(program, "archive_inspiration_ids", archive_insp_ids)
-            if top_k_insp_ids:
-                setattr(program, "top_k_inspiration_ids", top_k_insp_ids)
-            if code_diff:
-                setattr(program, "code_diff", code_diff)
-            if meta_patch_data:
-                setattr(program, "meta_patch_data", meta_patch_data)
-            if code_embedding:
-                setattr(program, "code_embedding", code_embedding)
-            setattr(program, "embed_cost", embed_cost)
+            prepared_program = self._prepare_program_for_write(
+                program,
+                parent_id=parent_id,
+                archive_insp_ids=archive_insp_ids,
+                top_k_insp_ids=top_k_insp_ids,
+                code_diff=code_diff,
+                meta_patch_data=meta_patch_data,
+                code_embedding=code_embedding,
+                embed_cost=embed_cost,
+                complexity_override=computed_complexity,
+                code_metrics=code_metrics,
+            )
 
             # Use semaphore to prevent concurrent database operations that can deadlock
             async with self._db_semaphore:
-                await self._add_program_fast_async(program)
+                await self._add_program_fast_async(prepared_program)
 
                 # Track programs and schedule embedding recomputation (inside semaphore)
                 async with self._lock:
@@ -415,9 +542,12 @@ class AsyncProgramDatabase:
 
             self._debug_track_end(op_id, success=True)
 
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async add_program: {e}")
+            logger.error("Error in async add_program: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def add_programs_batch_async(
@@ -467,22 +597,18 @@ class AsyncProgramDatabase:
                     embed_cost,
                 ) = program_data
 
-                # Set additional metadata using setattr for dynamic attributes
-                if parent_id:
-                    setattr(program, "parent_id", parent_id)
-                if archive_insp_ids:
-                    setattr(program, "archive_inspiration_ids", archive_insp_ids)
-                if top_k_insp_ids:
-                    setattr(program, "top_k_inspiration_ids", top_k_insp_ids)
-                if code_diff:
-                    setattr(program, "code_diff", code_diff)
-                if meta_patch_data:
-                    setattr(program, "meta_patch_data", meta_patch_data)
-                if code_embedding:
-                    setattr(program, "code_embedding", code_embedding)
-                setattr(program, "embed_cost", embed_cost)
-
-                prepared_programs.append(program)
+                prepared_programs.append(
+                    self._prepare_program_for_write(
+                        program,
+                        parent_id=parent_id,
+                        archive_insp_ids=archive_insp_ids,
+                        top_k_insp_ids=top_k_insp_ids,
+                        code_diff=code_diff,
+                        meta_patch_data=meta_patch_data,
+                        code_embedding=code_embedding,
+                        embed_cost=embed_cost,
+                    )
+                )
 
             # Use lock only for the actual database writes
             async with self._lock:
@@ -506,9 +632,12 @@ class AsyncProgramDatabase:
 
             self._debug_track_end(op_id, success=True)
 
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in batch add_programs: {e}")
+            logger.error("Error in batch add_programs: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     def _add_program_fast(self, program: Program):
@@ -537,6 +666,10 @@ class AsyncProgramDatabase:
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
+                if hasattr(thread_db, "set_display_console"):
+                    thread_db.set_display_console(
+                        getattr(self.sync_db, "display_console", None)
+                    )
 
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters
@@ -551,17 +684,13 @@ class AsyncProgramDatabase:
                         original_embedding_method
                     )
 
-            except Exception as e:
-                logger.error(f"Error in add_program_sync: {e}")
+            except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
+                logger.error("Error in add_program_sync: %s", exc)
+                raise
+            except Exception:
                 raise
             finally:
-                if thread_db:
-                    try:
-                        thread_db.close()
-                    except Exception as e:
-                        logger.warning(
-                            f"Error closing thread database in add_program_sync: {e}"
-                        )
+                self._close_thread_db(thread_db, context="add_program_sync")
 
         # Run the thread-safe database operation in an executor
         loop = asyncio.get_event_loop()
@@ -601,8 +730,10 @@ class AsyncProgramDatabase:
 
         except asyncio.CancelledError:
             logger.info("Embedding recomputation task was cancelled")
-        except Exception as e:
-            logger.error(f"Error in background embedding recomputation: {e}")
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
+            logger.error("Error in background embedding recomputation: %s", exc)
+        except Exception:
+            logger.exception("Unexpected error in background embedding recomputation")
 
     async def get_async(self, program_id: str) -> Optional[Program]:
         """Async version of get program by ID."""
@@ -623,8 +754,11 @@ class AsyncProgramDatabase:
                         self._debug_track_end(thread_op_id, success=True)
                         return result
                     finally:
-                        thread_db.close()
-                except Exception as e:
+                        self._close_thread_db(thread_db, context="get_thread_safe")
+                except EXPECTED_ASYNC_DB_EXCEPTIONS:
+                    self._debug_track_end(thread_op_id, success=False)
+                    raise
+                except Exception:
                     self._debug_track_end(thread_op_id, success=False)
                     raise
 
@@ -632,14 +766,15 @@ class AsyncProgramDatabase:
             result = await loop.run_in_executor(self.executor, get_thread_safe)
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get: {e}")
+            logger.error("Error in async get: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
-    async def get_programs_by_ids_async(
-        self, program_ids: List[str]
-    ) -> List[Program]:
+    async def get_programs_by_ids_async(self, program_ids: List[str]) -> List[Program]:
         """Async version of get_programs_by_ids for interactive operations."""
         op_id = self._debug_track_start(
             "get_programs_by_ids_async", count=len(program_ids)
@@ -659,8 +794,13 @@ class AsyncProgramDatabase:
                         self._debug_track_end(thread_op_id, success=True)
                         return result
                     finally:
-                        thread_db.close()
-                except Exception as e:
+                        self._close_thread_db(
+                            thread_db, context="get_by_ids_thread_safe"
+                        )
+                except EXPECTED_ASYNC_DB_EXCEPTIONS:
+                    self._debug_track_end(thread_op_id, success=False)
+                    raise
+                except Exception:
                     self._debug_track_end(thread_op_id, success=False)
                     raise
 
@@ -668,9 +808,12 @@ class AsyncProgramDatabase:
             result = await loop.run_in_executor(self.executor, get_by_ids_thread_safe)
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_programs_by_ids: {e}")
+            logger.error("Error in async get_programs_by_ids: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def sample_inspirations_for_parent_async(
@@ -697,20 +840,26 @@ class AsyncProgramDatabase:
                         self._debug_track_end(thread_op_id, success=True)
                         return result
                     finally:
-                        thread_db.close()
-                except Exception as e:
+                        self._close_thread_db(
+                            thread_db, context="sample_insps_thread_safe"
+                        )
+                except EXPECTED_ASYNC_DB_EXCEPTIONS:
+                    self._debug_track_end(thread_op_id, success=False)
+                    raise
+                except Exception:
                     self._debug_track_end(thread_op_id, success=False)
                     raise
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor, sample_insps_thread_safe
-            )
+            result = await loop.run_in_executor(self.executor, sample_insps_thread_safe)
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async sample_inspirations_for_parent: {e}")
+            logger.error("Error in async sample_inspirations_for_parent: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def get_best_program_async(self) -> Optional[Program]:
@@ -732,8 +881,11 @@ class AsyncProgramDatabase:
                         self._debug_track_end(thread_op_id, success=True)
                         return result
                     finally:
-                        thread_db.close()
-                except Exception as e:
+                        self._close_thread_db(thread_db, context="get_best_thread_safe")
+                except EXPECTED_ASYNC_DB_EXCEPTIONS:
+                    self._debug_track_end(thread_op_id, success=False)
+                    raise
+                except Exception:
                     self._debug_track_end(thread_op_id, success=False)
                     raise
 
@@ -741,9 +893,12 @@ class AsyncProgramDatabase:
             result = await loop.run_in_executor(self.executor, get_best_thread_safe)
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_best_program: {e}")
+            logger.error("Error in async get_best_program: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def batch_sample_async(
@@ -778,9 +933,12 @@ class AsyncProgramDatabase:
             self._debug_track_end(op_id, success=True)
             return valid_results
 
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in batch_sample_async: {e}")
+            logger.error("Error in batch_sample_async: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def close_async(self):
@@ -843,9 +1001,12 @@ class AsyncProgramDatabase:
             logger.info("Final embedding and cluster recomputation complete.")
             self._debug_track_end(op_id, success=True)
 
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in force_recompute_embeddings_async: {e}")
+            logger.error("Error in force_recompute_embeddings_async: %s", exc)
+            raise
+        except Exception:
+            self._debug_track_end(op_id, success=False)
             raise
 
     async def get_programs_by_generation_async(self, generation: int) -> List[Program]:
@@ -864,10 +1025,13 @@ class AsyncProgramDatabase:
             )
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_programs_by_generation: {e}")
+            logger.error("Error in async get_programs_by_generation: %s", exc)
             return []  # Return empty list on error
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
 
     async def get_total_program_count_async(self) -> int:
         """Async get total program count - much faster than checking each generation."""
@@ -883,25 +1047,29 @@ class AsyncProgramDatabase:
                     from .dbase import ProgramDatabase
 
                     thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
-                    thread_db.cursor.execute("SELECT COUNT(*) FROM programs")
-                    count = thread_db.cursor.fetchone()[0]
+                    thread_db.cursor.execute(
+                        "SELECT COUNT(*) AS program_count FROM programs"
+                    )
+                    row = thread_db.cursor.fetchone()
+                    count = int(row["program_count"]) if row is not None else 0
                     return count
                 finally:
-                    if thread_db:
-                        try:
-                            thread_db.close()
-                        except Exception as close_e:
-                            logger.warning(f"Error closing thread database: {close_e}")
+                    self._close_thread_db(
+                        thread_db, context="count_programs_thread_safe"
+                    )
 
             result = await loop.run_in_executor(
                 self.executor, count_programs_thread_safe
             )
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in get_total_program_count_async: {e}")
+            logger.error("Error in get_total_program_count_async: %s", exc)
             return 0  # Return 0 on error
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
 
     async def get_top_programs_async(
         self, n: int = 10, correct_only: bool = True
@@ -922,10 +1090,13 @@ class AsyncProgramDatabase:
             )
             self._debug_track_end(op_id, success=True)
             return result
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_top_programs: {e}")
+            logger.error("Error in async get_top_programs: %s", exc)
             return []
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
 
     async def compute_percentile_async(
         self, score: float, correct_only: bool = True
@@ -960,12 +1131,12 @@ class AsyncProgramDatabase:
                     # Get all scores from correct programs
                     if correct_only:
                         thread_db.cursor.execute(
-                            "SELECT combined_score FROM programs "
+                            "SELECT combined_score AS score FROM programs "
                             "WHERE correct = 1 AND combined_score IS NOT NULL"
                         )
                     else:
                         thread_db.cursor.execute(
-                            "SELECT combined_score FROM programs "
+                            "SELECT combined_score AS score FROM programs "
                             "WHERE combined_score IS NOT NULL"
                         )
 
@@ -973,7 +1144,7 @@ class AsyncProgramDatabase:
                     if not rows:
                         return 0.5  # No programs yet, neutral percentile
 
-                    all_scores = [row[0] for row in rows]
+                    all_scores = [float(row["score"]) for row in rows]
 
                     # Compute percentile: fraction of programs this score beats
                     beats = sum(1 for s in all_scores if score > s)
@@ -984,11 +1155,9 @@ class AsyncProgramDatabase:
                     return percentile
 
                 finally:
-                    if thread_db:
-                        try:
-                            thread_db.close()
-                        except Exception as close_e:
-                            logger.warning(f"Error closing thread database: {close_e}")
+                    self._close_thread_db(
+                        thread_db, context="compute_percentile_thread_safe"
+                    )
 
             result = await loop.run_in_executor(
                 self.executor, compute_percentile_thread_safe
@@ -996,10 +1165,13 @@ class AsyncProgramDatabase:
             self._debug_track_end(op_id, success=True)
             return result
 
-        except Exception as e:
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in compute_percentile_async: {e}")
+            logger.error("Error in compute_percentile_async: %s", exc)
             return 0.5  # Return neutral percentile on error
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
 
     # Delegate other methods to sync database
     def __getattr__(self, name):

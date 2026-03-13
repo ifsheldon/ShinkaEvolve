@@ -73,9 +73,11 @@ def test_run_shinka_eval_parallel_matches_sequential(tmp_path: Path) -> None:
     assert par_metrics["combined_score"] == seq_metrics["combined_score"]
     assert par_metrics["num_valid_runs"] == seq_metrics["num_valid_runs"] == 3
     assert par_metrics["num_invalid_runs"] == seq_metrics["num_invalid_runs"] == 2
-    assert par_metrics["all_validation_errors"] == seq_metrics[
-        "all_validation_errors"
-    ] == ["even seed invalid"]
+    assert (
+        par_metrics["all_validation_errors"]
+        == seq_metrics["all_validation_errors"]
+        == ["even seed invalid"]
+    )
     assert seq_correct is False
     assert par_correct is False
     assert seq_err == "Validation failed: even seed invalid"

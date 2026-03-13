@@ -4,20 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, get_args, get_origin
 
-from shinka.core import AsyncEvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
-
-DEFAULT_TASK_SYS_MSG = (
-    "You are an expert optimization and algorithm design assistant. "
-    "Improve the program while preserving correctness and immutable regions."
-)
+from shinka.cli.run_config import load_optional_yaml_config
 
 SUPPORTED_INITIAL_EXTENSIONS: dict[str, str] = {
     ".py": "python",
@@ -66,20 +61,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "  bool values: true,false,1,0,yes,no (case-insensitive)\n\n"
         "Common evo settings via --set:\n"
         "  budget: --set evo.max_api_costs=0.5\n"
-        '  models: --set evo.llm_models=\'["gpt-5-mini","gpt-5-nano"]\'\n'
+        "  models: --set "
+        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n"
         '  patching: --set evo.patch_types=\'["diff","full"]\' '
         "--set evo.patch_type_probs='[0.7,0.3]'\n"
-        '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.2,0.8],'
-        '"reasoning_efforts":["medium"],"max_tokens":16384}\'\n'
+        '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.0,0.5,1.0],'
+        '"max_tokens":16384}\'\n'
         "  quality controls: --set evo.max_patch_resamples=3 "
-        "--set evo.max_patch_attempts=3 --set evo.max_novelty_attempts=3\n"
+        "--set evo.max_patch_attempts=1 --set evo.max_novelty_attempts=3\n"
         "  embeddings: --set evo.embedding_model=text-embedding-3-small "
-        "--set evo.code_embed_sim_threshold=0.995\n\n"
+        "--set evo.code_embed_sim_threshold=0.99\n\n"
         "Common db settings via --set:\n"
-        "  islands: --set db.num_islands=3\n"
+        "  islands: --set db.num_islands=2\n"
         "  parent selection: --set db.parent_selection_strategy=weighted\n"
-        "  archive: --set db.archive_size=60 --set db.num_archive_inspirations=5\n"
-        "  migration: --set db.migration_interval=10 --set db.migration_rate=0.1\n\n"
+        "  archive: --set db.archive_size=40 --set db.num_archive_inspirations=1\n"
+        "  migration: --set db.migration_interval=10 --set db.migration_rate=0.0\n\n"
         "Examples:\n"
         "  Minimal:\n"
         "    shinka_run --task-dir examples/circle_packing "
@@ -87,14 +83,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "  With overrides:\n"
         "    shinka_run --task-dir examples/circle_packing "
         "--results_dir results/circle_custom --num_generations 50 "
-        "--set db.num_islands=3 --set db.parent_selection_strategy=weighted "
+        "--set db.num_islands=2 --set db.parent_selection_strategy=weighted "
         "--set job.time=00:10:00 "
-        '--set evo.llm_models=\'["gpt-5-mini","gpt-5-nano"]\'\n\n'
+        "--set job.activate_script=.venv/bin/activate "
+        "--set "
+        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n\n"
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"
-        "  - missing evaluate.py or initial.<ext>: non-zero exit\n\n"
+        "  - missing evaluate.py or initial.<ext>/invalid --config-fname YAML: non-zero exit\n\n"
         "Precedence:\n"
+        "  - --config-fname YAML loads first; --set overrides config YAML\n"
         "  - --results_dir always sets evo.results_dir\n"
         "  - --num_generations always sets evo.num_generations"
     )
@@ -140,10 +139,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NS.FIELD=VALUE",
         help=(
             "Repeatable namespaced override.\n"
-            "Examples: --set evo.max_parallel_jobs=4 "
+            "Examples: --set evo.max_patch_attempts=4 "
             "--set db.num_islands=2 "
             "--set job.extra_cmd_args='{\"seed\":42}'"
         ),
+    )
+    override_group.add_argument(
+        "--config-fname",
+        type=str,
+        default=None,
+        help="Optional YAML config loaded before --set. Relative paths resolve from --task-dir. Supports evo/db/job or evo_config/db_config/job_config.",
     )
 
     concurrency_group = parser.add_argument_group("concurrency")
@@ -151,19 +156,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-evaluation-jobs",
         type=_positive_int,
         default=None,
-        help="Override AsyncEvolutionRunner max_evaluation_jobs.",
+        help="Override ShinkaEvolveRunner max_evaluation_jobs.",
     )
     concurrency_group.add_argument(
         "--max-proposal-jobs",
         type=_positive_int,
         default=None,
-        help="Override AsyncEvolutionRunner max_proposal_jobs.",
+        help="Override ShinkaEvolveRunner max_proposal_jobs.",
     )
     concurrency_group.add_argument(
         "--max-db-workers",
         type=_positive_int,
         default=None,
-        help="Override AsyncEvolutionRunner max_db_workers.",
+        help="Override ShinkaEvolveRunner max_db_workers.",
     )
 
     output_group = parser.add_argument_group("output/verbosity")
@@ -346,36 +351,23 @@ def _build_default_evo_values(
     results_dir: Path,
     num_generations: int,
 ) -> Dict[str, Any]:
-    return {
-        "task_sys_msg": DEFAULT_TASK_SYS_MSG,
-        "patch_types": ["diff", "full", "cross"],
-        "patch_type_probs": [0.6, 0.3, 0.1],
-        "num_generations": num_generations,
-        "max_parallel_jobs": 2,
-        "max_patch_resamples": 3,
-        "max_patch_attempts": 3,
-        "job_type": "local",
-        "language": language,
-        "llm_models": ["gpt-5-mini"],
-        "llm_kwargs": {
-            "temperatures": [0.2, 0.6, 1.0],
-            "reasoning_efforts": ["medium"],
-            "max_tokens": 16384,
-        },
-        "embedding_model": "text-embedding-3-small",
-        "code_embed_sim_threshold": 0.995,
-        "init_program_path": str(init_program_path),
-        "results_dir": str(results_dir),
-        "max_novelty_attempts": 3,
-    }
+    return asdict(
+        EvolutionConfig(
+            num_generations=num_generations,
+            job_type="local",
+            language=language,
+            init_program_path=str(init_program_path),
+            results_dir=str(results_dir),
+        )
+    )
 
 
 def _build_default_db_values() -> Dict[str, Any]:
-    return {}
+    return asdict(DatabaseConfig())
 
 
 def _build_default_job_values(evaluate_path: Path) -> Dict[str, Any]:
-    return {"eval_program_path": str(evaluate_path)}
+    return asdict(LocalJobConfig(eval_program_path=str(evaluate_path)))
 
 
 def _validate_task_dir(task_dir: Path) -> tuple[Path, Path]:
@@ -398,7 +390,7 @@ def _build_runner(
     job_config: LocalJobConfig,
     init_program_str: str,
     evaluate_str: str,
-) -> AsyncEvolutionRunner:
+) -> ShinkaEvolveRunner:
     runner_kwargs: Dict[str, Any] = {
         "evo_config": evo_config,
         "job_config": job_config,
@@ -414,7 +406,7 @@ def _build_runner(
         runner_kwargs["max_proposal_jobs"] = args.max_proposal_jobs
     if args.max_db_workers is not None:
         runner_kwargs["max_db_workers"] = args.max_db_workers
-    return AsyncEvolutionRunner(**runner_kwargs)
+    return ShinkaEvolveRunner(**runner_kwargs)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -428,6 +420,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         evaluate_path, initial_path = _validate_task_dir(task_dir)
         language = _infer_language(initial_path)
         allowed_types = _field_types()
+        file_overrides, runner_config = load_optional_yaml_config(
+            task_dir=task_dir,
+            config_fname=args.config_fname,
+            allowed_field_types=allowed_types,
+        )
         parsed_overrides = _parse_overrides(args.overrides, allowed_types)
 
         evo_values = _build_default_evo_values(
@@ -436,15 +433,27 @@ def main(argv: Optional[list[str]] = None) -> int:
             results_dir=results_dir,
             num_generations=args.num_generations,
         )
+        evo_values.update(file_overrides["evo"])
         evo_values.update(parsed_overrides["evo"])
         evo_values["results_dir"] = str(results_dir)
         evo_values["num_generations"] = args.num_generations
 
         db_values = _build_default_db_values()
+        db_values.update(file_overrides["db"])
         db_values.update(parsed_overrides["db"])
 
         job_values = _build_default_job_values(evaluate_path)
+        job_values.update(file_overrides["job"])
         job_values.update(parsed_overrides["job"])
+
+        if args.max_evaluation_jobs is None:
+            args.max_evaluation_jobs = runner_config.get("max_evaluation_jobs")
+        if args.max_proposal_jobs is None:
+            args.max_proposal_jobs = runner_config.get("max_proposal_jobs")
+        if args.max_db_workers is None:
+            args.max_db_workers = runner_config.get("max_db_workers")
+        args.verbose = args.verbose or bool(runner_config.get("verbose", False))
+        args.debug = args.debug or bool(runner_config.get("debug", False))
 
         evo_config = EvolutionConfig(**evo_values)
         db_config = DatabaseConfig(**db_values)
@@ -464,7 +473,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001
         parser.error(str(exc))
 
-    asyncio.run(runner.run())
+    runner.run()
     return 0
 
 

@@ -8,10 +8,16 @@ back to ``interactive_status``.
 from __future__ import annotations
 
 import logging
-import time
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import List, Optional
 
-from shinka.database import Program
+from pydantic import ValidationError
+
+from shinka.interactive.payload_schemas import (
+    MergePayload,
+    SetTargetPayload,
+    SuggestPayload,
+)
+
 from shinka.interactive.interactive_db import (
     CommandStatus,
     CommandType,
@@ -20,9 +26,6 @@ from shinka.interactive.interactive_db import (
     InteractiveStatus,
     RunState,
 )
-
-if TYPE_CHECKING:
-    from shinka.database import ProgramDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,8 @@ class WebController:
         self._paused = False
         self._stop_requested = False
         self._continue_requested = False
+        self._step_requested = False
+        self._start_requested = False
 
     # ------------------------------------------------------------------
     # Public API used by EvolutionRunner
@@ -57,14 +62,31 @@ class WebController:
     def continue_requested(self) -> bool:
         return self._continue_requested
 
+    @property
+    def step_requested(self) -> bool:
+        """Read-and-clear: returns True once, then resets."""
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    @property
+    def start_requested(self) -> bool:
+        return self._start_requested
+
     def clear_continue(self) -> None:
         """Reset the continue flag after a job has been submitted."""
         self._continue_requested = False
 
-    def process_commands(
-        self,
-        program_db: "ProgramDatabase",
-    ) -> List[dict]:
+    def pause(self) -> None:
+        """Pause the runner (block new job submissions)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume the runner (allow new job submissions)."""
+        self._paused = False
+
+    def process_commands(self) -> List[dict]:
         """Drain pending commands and return actions for the runner.
 
         Returns a list of action dicts. Currently supported actions:
@@ -75,26 +97,37 @@ class WebController:
               "patch_type": str, "command_id": int}``
 
         Pause / resume / stop are handled internally (they flip flags).
+
+        .. note::
+
+           Parent-existence validation is intentionally deferred to the
+           caller (the runner's action handler) so that this method never
+           touches the main ``ProgramDatabase`` connection — which may
+           belong to a different thread in the async runner.
         """
         commands = self.interactive_db.poll_pending_commands()
         actions: List[dict] = []
 
         for cmd in commands:
             self.interactive_db.update_command_status(
-                cmd.id, CommandStatus.PROCESSING.value  # type: ignore[arg-type]
+                cmd.id,
+                CommandStatus.PROCESSING,
             )
             try:
-                action = self._handle_command(cmd, program_db)
+                action = self._handle_command(cmd)
                 if action is not None:
                     actions.append(action)
                 self.interactive_db.update_command_status(
-                    cmd.id, CommandStatus.COMPLETED.value  # type: ignore[arg-type]
+                    cmd.id,
+                    CommandStatus.COMPLETED,
                 )
-            except Exception as exc:
-                logger.error("Interactive command %s failed: %s", cmd.id, exc)
+            except ValidationError as exc:
+                logger.error(
+                    "Interactive command %s failed validation: %s", cmd.id, exc
+                )
                 self.interactive_db.update_command_status(
-                    cmd.id,  # type: ignore[arg-type]
-                    CommandStatus.FAILED.value,
+                    cmd.id,
+                    CommandStatus.FAILED,
                     result=str(exc),
                 )
 
@@ -106,21 +139,35 @@ class WebController:
         best_score: float,
         queued_jobs: int,
         total_programs: int,
+        target_generations: int = 0,
         *,
         idle: bool = False,
         waiting: bool = False,
+        waiting_for_start: bool = False,
+        is_resuming: bool = False,
     ) -> None:
-        """Persist current run status so the web backend can read it."""
-        if waiting:
+        """Persist current run status so the web backend can read it.
+
+        State priority (highest first):
+        1. waiting_for_start — runner ready, awaiting user greenlight
+        2. stopped — user requested stop
+        3. paused — user paused (takes priority over idle, per bug fix a06e6fd)
+        4. idle — no jobs in flight, target reached
+        5. running — default
+        """
+        if waiting_for_start:
+            state = RunState.WAITING_FOR_START
+        elif self._stop_requested:
+            state = RunState.STOPPED
+        elif waiting:
             state = RunState.WAITING
-        elif idle:
-            state = RunState.IDLE
         elif self._paused:
             state = RunState.PAUSED
+        elif idle:
+            state = RunState.IDLE
         else:
             state = RunState.RUNNING
-        if self._stop_requested:
-            state = RunState.STOPPED
+        self.interactive_db.write_heartbeat()
         self.interactive_db.write_status(
             InteractiveStatus(
                 run_state=state.value,
@@ -128,93 +175,113 @@ class WebController:
                 best_score=best_score,
                 queued_jobs=queued_jobs,
                 total_programs=total_programs,
+                target_generations=target_generations,
+                is_resuming=is_resuming,
             )
         )
 
     def mark_idle(self) -> None:
         """Mark the run as idle (generations done, still accepting commands)."""
+        self.interactive_db.write_heartbeat()
         self.interactive_db.write_status(
             InteractiveStatus(run_state=RunState.IDLE.value)
         )
 
     def mark_completed(self) -> None:
         """Mark the run as completed in the status table."""
+        self.interactive_db.write_heartbeat()
         self.interactive_db.write_status(
             InteractiveStatus(run_state=RunState.COMPLETED.value)
         )
+
+    def write_generation_heartbeat(self) -> None:
+        """Refresh generation-backend liveness without changing run status."""
+        self.interactive_db.write_heartbeat()
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _handle_command(
-        self, cmd: InteractiveCommand, program_db: "ProgramDatabase"
-    ) -> Optional[dict]:
+    def _handle_command(self, cmd: InteractiveCommand) -> Optional[dict]:
         ct = cmd.command_type
 
-        if ct == CommandType.PAUSE.value:
+        if ct == CommandType.PAUSE:
             logger.info("Interactive: pause requested")
             self._paused = True
             return None
 
-        if ct == CommandType.RESUME.value:
+        if ct == CommandType.RESUME:
             logger.info("Interactive: resume requested")
             self._paused = False
             return None
 
-        if ct == CommandType.STOP.value:
+        if ct == CommandType.STOP:
             logger.info("Interactive: stop requested")
             self._stop_requested = True
             return None
 
-        if ct == CommandType.CONTINUE.value:
+        if ct == CommandType.CONTINUE:
             logger.info("Interactive: continue requested")
             self._continue_requested = True
             return None
 
-        if ct == CommandType.SUGGEST.value:
-            payload = cmd.payload
-            parent_id = payload.get("parent_id")
-            prompt = payload.get("prompt", "")
-            patch_type = payload.get("patch_type", "full")
-            if not parent_id:
-                raise ValueError("suggest command requires parent_id")
-            # Verify parent exists
-            parent = program_db.get(parent_id)
-            if parent is None:
-                raise ValueError(f"parent program {parent_id} not found")
+        if ct == CommandType.START:
+            logger.info("Interactive: start requested (greenlight)")
+            self._start_requested = True
+            return None
+
+        if ct == CommandType.SET_TARGET:
+            if not isinstance(cmd.payload, SetTargetPayload):
+                raise TypeError(f"{ct.value} payload must be SetTargetPayload")
+            p = cmd.payload
             logger.info(
-                "Interactive: suggest — parent=%s patch_type=%s prompt=%.60s…",
-                parent_id, patch_type, prompt,
+                "Interactive: set_target — target_generations=%d",
+                p.target_generations,
             )
             return {
-                "action": "suggest",
-                "parent_id": parent_id,
-                "prompt": prompt,
-                "patch_type": patch_type,
+                "action": "set_target",
+                "target_generations": p.target_generations,
                 "command_id": cmd.id,
             }
 
-        if ct == CommandType.MERGE.value:
-            payload = cmd.payload
-            parent_ids = payload.get("parent_ids", [])
-            prompt = payload.get("prompt", "")
-            patch_type = payload.get("patch_type", "cross")
-            if len(parent_ids) < 2:
-                raise ValueError("merge command requires at least 2 parent_ids")
-            # Verify all parents exist
-            for pid in parent_ids:
-                if program_db.get(pid) is None:
-                    raise ValueError(f"program {pid} not found for merge")
+        if ct == CommandType.STEP:
+            logger.info("Interactive: step requested")
+            self._step_requested = True
+            return None
+
+        if ct == CommandType.SUGGEST:
+            if not isinstance(cmd.payload, SuggestPayload):
+                raise TypeError(f"{ct.value} payload must be SuggestPayload")
+            p = cmd.payload
+            logger.info(
+                "Interactive: suggest — parent=%s patch_type=%s prompt=%.60s…",
+                p.parent_id,
+                p.patch_type,
+                p.prompt,
+            )
+            return {
+                "action": "suggest",
+                "parent_id": p.parent_id,
+                "prompt": p.prompt,
+                "patch_type": p.patch_type,
+                "command_id": cmd.id,
+            }
+
+        if ct == CommandType.MERGE:
+            if not isinstance(cmd.payload, MergePayload):
+                raise TypeError(f"{ct.value} payload must be MergePayload")
+            p = cmd.payload
             logger.info(
                 "Interactive: merge — parents=%s patch_type=%s prompt=%.60s…",
-                parent_ids, patch_type, prompt,
+                p.parent_ids,
+                p.patch_type,
+                p.prompt,
             )
             return {
                 "action": "merge",
-                "parent_ids": parent_ids,
-                "prompt": prompt,
-                "patch_type": patch_type,
+                "parent_ids": p.parent_ids,
+                "prompt": p.prompt,
+                "patch_type": p.patch_type,
                 "command_id": cmd.id,
             }
 

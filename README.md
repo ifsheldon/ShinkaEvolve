@@ -1,11 +1,11 @@
 <h1 align="center">
-  <a href="shinka/favicon.png?raw=true"><img src="shinka/favicon.png?raw=true" width="180" /></a><br>
+  <a href="https://github.com/SakanaAI/ShinkaEvolve"><img src="https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/shinka/favicon.png" width="180" /></a><br>
   <b><code>ShinkaEvolve</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
 </h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" />
-  <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/master/LICENSE.md"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
+  <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
   <a href="https://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
   <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/Blog%20%7C%20SakanaAI-0A66C2.svg" /></a>
@@ -13,13 +13,19 @@
 </p>
 
 
-[`shinka`]() is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
+[`shinka`](https://sakana.ai/shinka-evolve/) is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
 ---
 
-**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for [agentic task generation and evolution](docs/agentic_usage.md).
+**Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner` and `AsyncEvolutionRunner`). You can now install `shinka` via PyPI and `uv`: `pip install shinka-evolve`.
 
-**Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
+**Feb 2026 Update**: Added [agent skills](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md) for using `shinka` within coding agents (Claude Code, Codex, etc.) for new task generation ([`shinka-setup`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-inspect/SKILL.md)). Install them via `npx`:
+
+```
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -a claude-code -a codex -y
+```
+
+**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/release_notes.md) with many new features.
 
 **Nov 2025 Update**: Rob gave several public talks about our ShinkaEvolve effort ([Official](https://x.com/SakanaAILabs/status/1989352976792846356?s=20), [AutoML Seminar](https://www.youtube.com/watch?v=dAOIer_1INo)).
 
@@ -29,179 +35,181 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `shinka` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
-![](docs/media/conceptual.png)
+![](https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/docs/media/conceptual.png)
 
 ## Documentation 📝
 
 | Guide | Description | What You'll Learn |
 |-------|-------------|-------------------|
-| 🚀 **[Getting Started](docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
-| 📓 **[Tutorial](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
-| ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
-| 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
-| ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, performance tuning, migration guide | 
-| 🧠 **[Local LLM](docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
-| 🤖 **[Agentic Usage](docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
+| 🚀 **[Getting Started](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
+| 📓 **[Tutorial](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
+| ⚙️ **[Configuration](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
+| 🎨 **[WebUI](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
+| ⚡ **[Async Evolution](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
+| 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
+| 🤖 **[Agentic Usage](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 
 ## Installation & Quick Start 🚀
 
 ```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Install from PyPI
+pip install shinka-evolve
 
-# Create environment and install Shinka
-cd ShinkaEvolve
-uv venv --python 3.11
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e .
+# Or with uv
+uv pip install shinka-evolve
 
 # Run your first evolution experiment
 shinka_launch variant=circle_packing_example
 ```
 
-Dynamic backend IDs are supported in `llm_models`, e.g.:
+The distribution name is `shinka-evolve`; Python imports stay `import shinka`.
 
-```yaml
-evo_config:
-  llm_models:
-    - openrouter/qwen/qwen3-coder
-    - local/qwen2.5-coder@http://localhost:11434/v1
+`shinka_launch` still supports the original shorthand group overrides:
+
+```bash
+shinka_launch variant=circle_packing_example
+shinka_launch task=novelty_generator database=island_small
 ```
 
-For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
+Built-in Hydra presets ship inside the package under `shinka/configs/`. To add your own presets from a PyPI install without cloning the repo, place them in your own config directory and pass `--config-dir`:
+
+```bash
+mkdir -p ~/my-shinka-configs/variant
+$EDITOR ~/my-shinka-configs/variant/my_variant.yaml
+shinka_launch --config-dir ~/my-shinka-configs variant=my_variant
+```
+
+For development installs from source:
+
+```bash
+git clone https://github.com/SakanaAI/ShinkaEvolve
+cd ShinkaEvolve
+uv venv --python 3.11
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e .
+```
+
+For detailed installation instructions and usage examples, see the [Getting Started Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md).
 
 ## Examples 📖
 
 | Example | Description | Environment Setup |
 |---------|-------------|-------------------|
-| ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
-| 🎮 [Game 2048](examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
-| ∑ [Julia Prime Counting](examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
-| ✨ [Novelty Generator](examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
+| ⭕ [Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
+| 🎮 [Game 2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
+| ∑ [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
+| ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
 
 For the simplest setup with default settings, you only need to specify the evaluation program:
 
-<table>
-<tr>
-<td width="50%">
-
-**`EvolutionRunner` - Synchronous**
-
 ```python
-from shinka.core import EvolutionRunner
-from shinka.core import EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
 # Minimal - only specify what's required
-job_conf = LocalJobConfig(
-    eval_program_path="evaluate.py",
-)
+job_conf = LocalJobConfig(eval_program_path="evaluate.py")
+# Or source a uv/venv environment per job:
+# job_conf = LocalJobConfig(
+#     eval_program_path="evaluate.py",
+#     activate_script=".venv/bin/activate",
+# )
 db_conf = DatabaseConfig()
-evo_conf = EvolutionConfig(
-    init_program_path="initial.py",
-)
+evo_conf = EvolutionConfig(init_program_path="initial.py")
 
-# Evolution: parallel evals & seq. gen.
-runner = EvolutionRunner(
+runner = ShinkaEvolveRunner(
     evo_config=evo_conf,
     job_config=job_conf,
     db_config=db_conf,
+    max_evaluation_jobs=2,
+    max_proposal_jobs=1,  # sync-like proposal behavior
 )
-
 runner.run()
 ```
-
-</td>
-<td width="50%">
-
-**`AsyncEvolutionRunner` - Asynchronous**
-
-```python
-import asyncio
-from shinka.core import AsyncEvolutionRunner, ...
-
-async def main():
-    # Same import & setup of hyperparams
-    job_conf = LocalJobConfig(...)
-    db_conf = DatabaseConfig()
-    evo_conf = EvolutionConfig(...)
-    
-    # Async evolution with concurrent proposals
-    runner = AsyncEvolutionRunner(
-        evo_config=evo_conf,
-        job_config=job_conf,
-        db_config=db_conf,
-        max_proposal_jobs=10,  # Proposals workers
-        max_evaluation_jobs=10,  # Proposal workers
-    )
-
-    await runner.run()
-
-# Asyncio execution
-asyncio.run(main())
-```
-</td>
-</tr>
-</table>
 
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
 
+Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydra presets and CLI overrides can replace these values.
+
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
-| `task_sys_msg` | `None` | `Optional[str]` | System message describing the optimization task |
-| `patch_types` | `["diff"]` | `List[str]` | Types of patches to generate: "diff", "full", "cross" |
-| `patch_type_probs` | `[1.0]` | `List[float]` | Probabilities for each patch type |
-| `num_generations` | `10` | `int` | Number of evolution generations to run |
-| `max_parallel_jobs` | `2` | `int` | Maximum number of parallel evaluation jobs |
+| `task_sys_msg` | `"You are an expert optimization and algorithm design assistant. Improve the program while preserving correctness and immutable regions."` | `Optional[str]` | System message describing the optimization task |
+| `patch_types` | `["diff", "full", "cross"]` | `List[str]` | Types of patches to generate: "diff", "full", "cross" |
+| `patch_type_probs` | `[0.6, 0.3, 0.1]` | `List[float]` | Probabilities for each patch type |
+| `num_generations` | `50` | `int` | Number of evolution generations to run |
+| `max_proposal_jobs` | `1` | `int` | Maximum number of concurrent proposal generation jobs |
+| `max_db_workers` | `4` | `int` | Maximum number of async DB worker threads |
 | `max_patch_resamples` | `3` | `int` | Max times to resample a patch if it fails |
-| `max_patch_attempts` | `5` | `int` | Max attempts to generate a valid patch |
+| `max_patch_attempts` | `1` | `int` | Max attempts to generate a valid patch |
 | `job_type` | `"local"` | `str` | Job execution type: "local", "slurm_docker", "slurm_conda" |
 | `language` | `"python"` | `str` | Programming language for evolution |
-| `llm_models` | `["azure-gpt-4.1-mini"]` | `List[str]` | List of LLM models for code generation |
-| `llm_dynamic_selection` | `None` | `Optional[Union[str, BanditBase]]` | Dynamic model selection strategy |
-| `llm_dynamic_selection_kwargs` | `{}` | `dict` | Kwargs for dynamic selection |
-| `llm_kwargs` | `{}` | `dict` | Additional kwargs for LLM calls |
-| `meta_rec_interval` | `None` | `Optional[int]` | Interval for meta-recommendations |
+| `llm_models` | `["gpt-5-mini", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gpt-5.4"]` | `List[str]` | List of LLM models for code generation |
+| `llm_dynamic_selection` | `"ucb"` | `Optional[Union[str, BanditBase]]` | Dynamic model selection strategy |
+| `llm_dynamic_selection_kwargs` | `{"cost_aware_coef": 0.5}` | `dict` | Kwargs for dynamic selection |
+| `llm_kwargs` | `{"temperatures": [0.0, 0.5, 1.0], "max_tokens": 16384}` | `dict` | Additional kwargs for LLM calls |
+| `meta_rec_interval` | `10` | `Optional[int]` | Interval for meta-recommendations |
 | `meta_llm_models` | `None` | `Optional[List[str]]` | LLM models for meta-recommendations |
 | `meta_llm_kwargs` | `{}` | `dict` | Kwargs for meta-recommendation LLMs |
 | `meta_max_recommendations` | `5` | `int` | Max number of meta-recommendations |
-| `embedding_model` | `None` | `Optional[str]` | Model for code embeddings |
+| `sample_single_meta_rec` | `True` | `bool` | Sample a single recommendation from meta output when enabled |
+| `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings |
 | `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
 | `max_novelty_attempts` | `3` | `int` | Max attempts for novelty generation |
-| `code_embed_sim_threshold` | `1.0` | `float` | Similarity threshold for code embeddings |
+| `code_embed_sim_threshold` | `0.99` | `float` | Similarity threshold for code embeddings |
 | `novelty_llm_models` | `None` | `Optional[List[str]]` | LLM models for novelty judgment |
 | `novelty_llm_kwargs` | `{}` | `dict` | Kwargs for novelty LLMs |
 | `use_text_feedback` | `False` | `bool` | Whether to use text feedback in evolution |
+| `max_api_costs` | `None` | `Optional[float]` | Total API budget cap (USD); async runner stops new proposals at cap |
+| `inspiration_sort_order` | `"ascending"` | `str` | Inspiration ordering (`"ascending"`, `"chronological"`, `"none"`) |
+| `evolve_prompts` | `False` | `bool` | Enable meta-prompt evolution loop |
+| `prompt_patch_types` | `["diff", "full"]` | `List[str]` | Patch formats used for prompt evolution |
+| `prompt_patch_type_probs` | `[0.7, 0.3]` | `List[float]` | Sampling probabilities for prompt patch formats |
+| `prompt_evolution_interval` | `None` | `Optional[int]` | Prompt-evolution cadence in generations (`None` disables periodic updates) |
+| `prompt_archive_size` | `10` | `int` | Size of system-prompt archive |
+| `prompt_llm_models` | `None` | `Optional[List[str]]` | LLM models for prompt evolution (`None` falls back to `llm_models`) |
+| `prompt_llm_kwargs` | `{}` | `dict` | Extra kwargs for prompt-evolution LLM calls |
+| `prompt_ucb_exploration_constant` | `1.0` | `float` | UCB exploration constant for prompt sampling |
+| `prompt_epsilon` | `0.1` | `float` | Epsilon-greedy exploration probability for prompt sampling |
+| `prompt_evo_top_k_programs` | `3` | `int` | Number of top programs used as context in prompt evolution |
+| `prompt_percentile_recompute_interval` | `20` | `int` | Generations between prompt percentile recomputations |
 
 </details>
 
 <details>
 <summary><strong>DatabaseConfig Parameters</strong> (click to expand)</summary>
 
+Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hydra presets and CLI overrides can replace these values.
+
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
 | `db_path` | `None` | `Optional[str]` | Database file path (auto-generated if None) |
-| `num_islands` | `4` | `int` | Number of evolution islands for diversity |
-| `archive_size` | `100` | `int` | Size of program archive per island |
+| `num_islands` | `2` | `int` | Number of evolution islands for diversity |
+| `archive_size` | `40` | `int` | Global archive size cap |
 | `elite_selection_ratio` | `0.3` | `float` | Proportion of elite programs for inspiration |
-| `num_archive_inspirations` | `5` | `int` | Number of archive programs to use as inspiration |
-| `num_top_k_inspirations` | `2` | `int` | Number of top-k programs for inspiration |
+| `num_archive_inspirations` | `1` | `int` | Number of archive programs to use as inspiration |
+| `num_top_k_inspirations` | `1` | `int` | Number of top-k programs for inspiration |
 | `migration_interval` | `10` | `int` | Generations between island migrations |
-| `migration_rate` | `0.1` | `float` | Proportion of island population to migrate |
+| `migration_rate` | `0.0` | `float` | Proportion of island population to migrate |
 | `island_elitism` | `True` | `bool` | Keep best programs on their original islands |
 | `enforce_island_separation` | `True` | `bool` | Enforce full separation between islands |
-| `parent_selection_strategy` | `"power_law"` | `str` | Parent selection: "weighted", "power_law", "beam_search" |
+| `island_selection_strategy` | `"uniform"` | `str` | Island sampler (`"uniform"`, `"equal"`, `"proportional"`, `"weighted"`) |
+| `enable_dynamic_islands` | `False` | `bool` | Enable stagnation-triggered island spawning |
+| `stagnation_threshold` | `100` | `int` | Generations without improvement before spawning a new island |
+| `island_spawn_strategy` | `"initial"` | `str` | New-island seed strategy (`"initial"`, `"best"`, `"archive_random"`) |
+| `island_spawn_subtree_size` | `1` | `int` | Number of programs copied when spawning an island |
+| `parent_selection_strategy` | `"weighted"` | `str` | Parent selection: "weighted", "power_law", "beam_search" |
 | `exploitation_alpha` | `1.0` | `float` | Power-law exponent (0=uniform, 1=power-law) |
 | `exploitation_ratio` | `0.2` | `float` | Chance to pick parent from archive |
 | `parent_selection_lambda` | `10.0` | `float` | Sharpness of sigmoid for weighted selection |
 | `num_beams` | `5` | `int` | Number of beams for beam search selection |
+| `archive_selection_strategy` | `"fitness"` | `str` | Archive replacement strategy (`"fitness"` or `"crowding"`) |
+| `archive_criteria` | `{"combined_score": 1.0}` | `Dict[str, float]` | Weighted ranking criteria used by fitness archive updates |
 
 </details>
 
@@ -215,6 +223,7 @@ asyncio.run(main())
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
 | `time` | `None` | `Optional[str]` | Time limit for job execution |
 | `conda_env` | `None` | `Optional[str]` | Conda environment to run jobs in |
+| `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 
 **SlurmDockerJobConfig** (for SLURM with Docker):
 | Key | Default Value | Type | Explanation |
@@ -230,12 +239,13 @@ asyncio.run(main())
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
 
-**SlurmCondaJobConfig** (for SLURM with Conda):
+**SlurmCondaJobConfig / SlurmEnvJobConfig** (for SLURM with sourced or Conda environments):
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
 | `eval_program_path` | `"evaluate.py"` | `Optional[str]` | Path to evaluation script |
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
 | `conda_env` | `""` | `str` | Conda environment name |
+| `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 | `modules` | `[]` | `Optional[List[str]]` | Environment modules to load |
 | `partition` | `"gpu"` | `str` | SLURM partition to use |
 | `time` | `"01:00:00"` | `str` | Job time limit |
@@ -243,11 +253,13 @@ asyncio.run(main())
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
 
+`conda_env` and `activate_script` are mutually exclusive.
+
 </details>
 
 ### Evaluation Setup & Initial Solution 🏃
 
-To use EvolutionRunner, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `shinka` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
+To use `ShinkaEvolveRunner`, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `shinka` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
 
 <table>
 <tr>
@@ -332,8 +344,8 @@ def solve_problem(params):
 `shinka` Launcher utilizes [Hydra](https://hydra.cc/) to configure and launch evolutionary experiments effortlessly. It supports concise configuration via Hydra's powerful override syntax, making it easy to manage and iterate scientific explorations.
 
 ```bash
-# Run with pre-configured variant
-shinka_launch variant=circle_packing_example
+# Run with the shared default baseline
+shinka_launch
 
 # Run with custom parameters
 shinka_launch \
@@ -344,7 +356,7 @@ shinka_launch \
     evo_config.num_generations=20
 ```
 
-For comprehensive configuration options and advanced usage, see the [Configuration Guide](docs/configuration.md).
+For comprehensive configuration options and advanced usage, see the [Configuration Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md).
 
 ## `shinka_run` Agent CLI 🤖
 
@@ -365,21 +377,32 @@ shinka_run \
     --task-dir examples/circle_packing \
     --results_dir results/circle_agent_custom \
     --num_generations 50 \
-    --set evo.max_parallel_jobs=6 \
-    --set db.num_islands=3 \
+    --max-evaluation-jobs 6 \
+    --set db.num_islands=2 \
     --set job.time=00:10:00 \
-    --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
+    --set job.activate_script=.venv/bin/activate \
+    --set evo.llm_models='["gpt-5-mini","gemini-3-flash-preview"]'
+
+# Load optional YAML config (relative to --task-dir), then override via --set
+shinka_run \
+    --task-dir examples/circle_packing \
+    --config-fname shinka_small.yaml \
+    --results_dir results/circle_agent_from_yaml \
+    --num_generations 50 \
+    --set db.num_islands=2
 ```
 
 `--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
-`--results_dir` and `--num_generations` are authoritative and always override `--set evo.results_dir=...` and `--set evo.num_generations=...`.
+`--config-fname` can define `evo/db/job` (or `evo_config/db_config/job_config`) plus `max_evaluation_jobs/max_proposal_jobs/max_db_workers` and `verbose/debug`.  
+Precedence: config YAML < `--set` < authoritative flags.  
+`--results_dir` and `--num_generations` are authoritative and always override config/`--set` values for `evo.results_dir` and `evo.num_generations`.
 
 
 ## Interactive WebUI 🎨
 
 Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
-![WebUI Screenshot](docs/media/webui.png)
+![WebUI Screenshot](https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/docs/media/webui.png)
 
 ### Quick Start
 
@@ -387,13 +410,13 @@ Launch the WebUI alongside your evolution experiment:
 
 ```bash
 # Start your evolution experiment
-shinka_launch variant=circle_packing_example
+shinka_launch
 
 # In another terminal, launch the WebUI
 shinka_visualize --port 8888 --open
 ```
 
-For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
+For detailed WebUI documentation, see the [WebUI Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md).
 
 ## Related Open-Source Projects 🧑‍🔧
 

@@ -38,7 +38,7 @@ from typing import Dict, List, Optional
 # We never actually call the embedding API (embedding_model=None disables it).
 os.environ.setdefault("OPENAI_API_KEY", "sk-fake-for-sandbox-testing")
 
-from shinka.core import EvolutionConfig, AsyncInteractiveRunner
+from shinka.core import EvolutionConfig, ShinkaEvolveInteractiveRunner
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 from shinka.llm.providers.result import QueryResult
@@ -271,8 +271,12 @@ db_config = DatabaseConfig(
 )
 
 
-def _create_evo_config(resume: bool) -> EvolutionConfig:
-    """Create evolution config with the given resume mode."""
+def _create_evo_config() -> EvolutionConfig:
+    """Create evolution config."""
+    # Resolve path to the mock novelty function next to this script
+    _here = Path(__file__).resolve().parent
+    novelty_path = str(_here / "novelty.py")
+
     return EvolutionConfig(
         task_sys_msg=(
             "You are evolving a simple Python function that returns a number. "
@@ -282,7 +286,7 @@ def _create_evo_config(resume: bool) -> EvolutionConfig:
         patch_types=["full"],  # only full rewrites (easiest to mock)
         patch_type_probs=[1.0],
         num_generations=100,
-        max_parallel_jobs=2,
+        max_proposal_jobs=2,
         max_patch_resamples=1,
         max_patch_attempts=1,
         language="python",
@@ -296,8 +300,7 @@ def _create_evo_config(resume: bool) -> EvolutionConfig:
         init_program_path="initial.py",
         results_dir="results_sandbox",
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
-        interactive_mode=True,  # ← enable interactive tables
-        interaction_mode="manual" if resume else "auto",
+        novelty_function_path=novelty_path,  # mock novelty — randomly fires
     )
 
 
@@ -323,22 +326,25 @@ def _clean_previous_run() -> None:
         print(f"[clean] Removed stale artefacts: {', '.join(removed)}")
 
 
-async def main_async(resume: bool = False):
-    """Async version using AsyncInteractiveRunner for 5-10x faster evolution."""
+def main(resume: bool = False):
+    """Run interactive evolution using ShinkaEvolveInteractiveRunner."""
     if not resume:
         _clean_previous_run()
 
     print("=" * 72)
     print("  Interactive Sandbox — Mock Evolution (ASYNC)")
     print("  DB:  evolution_db.sqlite")
-    print("  Interactive mode: ON")
+    if resume:
+        print("  Mode: RESUME (will start paused for review)")
+    else:
+        print("  Mode: FRESH RUN")
     print("=" * 72)
     print()
     print("Tip: start the evolve-shell UI in another terminal to interact.")
     print("     You can pause/resume/suggest/merge from the web interface.\n")
 
-    evo_config = _create_evo_config(resume)
-    runner = AsyncInteractiveRunner(
+    evo_config = _create_evo_config()
+    runner = ShinkaEvolveInteractiveRunner(
         evo_config=evo_config,
         job_config=job_config,
         db_config=db_config,
@@ -346,12 +352,11 @@ async def main_async(resume: bool = False):
         max_proposal_jobs=4,
         verbose=True,
     )
-    await runner.run()
+    runner.run()
 
 
 if __name__ == "__main__":
     import argparse
-    import asyncio
 
     parser = argparse.ArgumentParser(description="Interactive Sandbox — Mock Evolution")
     parser.add_argument(
@@ -361,4 +366,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    asyncio.run(main_async(resume=args.resume))
+    main(resume=args.resume)

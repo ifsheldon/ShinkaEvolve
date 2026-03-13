@@ -15,6 +15,7 @@ from .islands import CombinedIslandManager
 from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
 from shinka.embed import EmbeddingClient
+from shinka.defaults import default_archive_criteria
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,12 @@ class DatabaseConfig:
 
     # Inspiration parameters
     elite_selection_ratio: float = 0.3  # Prop of elites inspirations
-    num_archive_inspirations: int = 5  # No. inspiration programs
-    num_top_k_inspirations: int = 2  # No. top-k inspiration programs
+    num_archive_inspirations: int = 1  # No. inspiration programs
+    num_top_k_inspirations: int = 1  # No. top-k inspiration programs
 
     # Island model/migration parameters
     migration_interval: int = 10  # Migrate every N generations
-    migration_rate: float = 0.1  # Prop. of island pop. to migrate
+    migration_rate: float = 0.0  # Prop. of island pop. to migrate
     island_elitism: bool = True  # Keep best prog on their islands
     enforce_island_separation: bool = (
         True  # Enforce full island separation for inspirations
@@ -78,7 +79,7 @@ class DatabaseConfig:
 
     # Parent selection parameters
     parent_selection_strategy: str = (
-        "power_law"  # "weighted"/"power_law" / "beam_search"
+        "weighted"  # "weighted"/"power_law" / "beam_search"
     )
 
     # Power-law parent selection parameters
@@ -97,11 +98,7 @@ class DatabaseConfig:
     #   Positive weight = higher is better (e.g., combined_score)
     #   Negative weight = lower is better (e.g., loc, complexity)
     # Weights represent relative importance after rank normalization
-    archive_criteria: Dict[str, float] = field(
-        default_factory=lambda: {
-            "combined_score": 1.0,  # Primary: maximize fitness
-        }
-    )
+    archive_criteria: Dict[str, float] = field(default_factory=default_archive_criteria)
 
 
 def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
@@ -194,6 +191,10 @@ class Program:
     # Meta-prompt evolution: track which system prompt generated this program
     system_prompt_id: Optional[str] = None
 
+    # Novelty detection results (populated by NoveltyDetector after evaluation)
+    novelty_level: str = "none"  # NoveltyLevel enum value: "none", "moderate", "high"
+    novelty_data: Dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
         data = asdict(self)
@@ -283,6 +284,7 @@ class ProgramDatabase:
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
+        self.display_console: Optional[Any] = None
 
         # Lazy-init embedding client to avoid requiring API credentials for
         # database-only operations and tests that do not compute embeddings.
@@ -446,7 +448,9 @@ class ProgramDatabase:
                 metadata TEXT,      -- JSON serialized Dict[str, Any]
                 migration_history TEXT, -- JSON of migration events
                 island_idx INTEGER,  -- Add island_idx to the schema
-                system_prompt_id TEXT  -- ID of system prompt that generated this program
+                system_prompt_id TEXT,  -- ID of system prompt that generated this program
+                novelty_level TEXT DEFAULT 'none',
+                novelty_data TEXT
             )
             """
         )
@@ -527,6 +531,30 @@ class ProgramDatabase:
                 logger.info("Successfully added system_prompt_id column")
         except sqlite3.Error as e:
             logger.error(f"Error during system_prompt_id migration: {e}")
+
+        # Migration 3: Add novelty_level column if it doesn't exist
+        try:
+            if "novelty_level" not in columns:
+                logger.info("Adding novelty_level column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_level TEXT DEFAULT 'none'"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_level column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_level migration: {e}")
+
+        # Migration 4: Add novelty_data column if it doesn't exist
+        try:
+            if "novelty_data" not in columns:
+                logger.info("Adding novelty_data column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_data TEXT"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_data column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_data migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -691,9 +719,9 @@ class ProgramDatabase:
                     text_feedback, complexity, embedding, embedding_pca_2d,
                     embedding_pca_3d, embedding_cluster_id, correct,
                     children_count, metadata, island_idx, migration_history,
-                    system_prompt_id)
+                    system_prompt_id, novelty_level, novelty_data)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     program.id,
@@ -720,6 +748,8 @@ class ProgramDatabase:
                     program.island_idx,
                     migration_history_json,
                     program.system_prompt_id,
+                    program.novelty_level,
+                    json.dumps(program.novelty_data) if program.novelty_data else None,
                 ),
             )
 
@@ -905,6 +935,19 @@ class ProgramDatabase:
 
         # Handle archive status
         program_data["in_archive"] = bool(program_data.get("in_archive", 0))
+
+        # Handle novelty detection fields
+        if "novelty_level" not in program_data or program_data["novelty_level"] is None:
+            program_data["novelty_level"] = "none"
+
+        novelty_data_text = program_data.get("novelty_data")
+        if novelty_data_text and isinstance(novelty_data_text, str):
+            try:
+                program_data["novelty_data"] = json.loads(novelty_data_text)
+            except json.JSONDecodeError:
+                program_data["novelty_data"] = {}
+        elif not isinstance(novelty_data_text, dict):
+            program_data["novelty_data"] = {}
 
         return Program.from_dict(program_data)
 
@@ -1123,6 +1166,33 @@ class ProgramDatabase:
         )
 
         return parent, archive_inspirations, top_k_inspirations
+
+    def sample_inspirations_for_parent(
+        self,
+        parent: Program,
+        num_archive_insp: int,
+        num_top_k_insp: int,
+    ) -> Tuple[List[Program], List[Program]]:
+        """Sample inspirations for a specific parent program.
+
+        Used by interactive actions (suggest/merge) where the parent is
+        chosen by the expert rather than by the sampling strategy.
+        """
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        context_selector = CombinedContextSelector(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            get_program_func=self.get,
+            best_program_id=self.best_program_id,
+            get_island_idx_func=(
+                self.island_manager.get_island_idx if self.island_manager else None
+            ),
+            program_from_row_func=self._program_from_row,
+        )
+        return context_selector.sample_context(parent, num_archive_insp, num_top_k_insp)
 
     @db_retry()
     def sample_with_fix_mode(
@@ -1352,6 +1422,7 @@ class ProgramDatabase:
                 island_manager=self.island_manager,
                 count_programs_func=self._count_programs_in_db,
                 get_best_program_func=self.get_best_program,
+                default_console=self.display_console,
             )
 
         self._database_display.print_sampling_summary(
@@ -1365,6 +1436,7 @@ class ProgramDatabase:
             max_resample_attempts,
             ancestor_inspirations,
             is_fix_mode,
+            console=self.display_console,
         )
 
     @db_retry()
@@ -2205,9 +2277,12 @@ class ProgramDatabase:
                 island_manager=self.island_manager,
                 count_programs_func=self._count_programs_in_db,
                 get_best_program_func=self.get_best_program,
+                default_console=self.display_console,
             )
             self._database_display.set_last_iteration(self.last_iteration)
 
+        if hasattr(self._database_display, "set_default_console"):
+            self._database_display.set_default_console(self.display_console)
         self._database_display.print_summary(console)
 
     def _print_program_summary(self, program) -> None:
@@ -2220,9 +2295,22 @@ class ProgramDatabase:
                 island_manager=self.island_manager,
                 count_programs_func=self._count_programs_in_db,
                 get_best_program_func=self.get_best_program,
+                default_console=self.display_console,
             )
 
-        self._database_display.print_program_summary(program)
+        if hasattr(self._database_display, "set_default_console"):
+            self._database_display.set_default_console(self.display_console)
+        self._database_display.print_program_summary(
+            program, console=self.display_console
+        )
+
+    def set_display_console(self, console: Optional[Any]) -> None:
+        """Set shared console used for rich DB summaries."""
+        self.display_console = console
+        if hasattr(self, "_database_display") and hasattr(
+            self._database_display, "set_default_console"
+        ):
+            self._database_display.set_default_console(console)
 
     def check_scheduled_operations(self):
         """Run any operations that were scheduled during add but deferred for performance."""
@@ -2750,6 +2838,7 @@ class ProgramDatabase:
                         "public_metrics",
                         "private_metrics",
                         "metadata",
+                        "novelty_data",
                         "archive_inspiration_ids",
                         "top_k_inspiration_ids",
                         "embedding",

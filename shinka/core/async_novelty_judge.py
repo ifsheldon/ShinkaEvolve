@@ -284,4 +284,3 @@ class AsyncNoveltyJudge:
     def __getattr__(self, name):
         """Delegate unknown methods to sync novelty judge."""
         return getattr(self.sync_judge, name)
-

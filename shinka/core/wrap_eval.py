@@ -199,8 +199,7 @@ def run_shinka_eval(
 
     if parallel_enabled and early_stop_method is not None:
         raise ValueError(
-            "Early stopping is only supported in sequential mode "
-            "(set run_workers=1)."
+            "Early stopping is only supported in sequential mode (set run_workers=1)."
         )
 
     if early_stop_method is not None:

@@ -305,7 +305,10 @@ class LLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
-                logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}", exc_info=True)
+                logger.error(
+                    f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}",
+                    exc_info=True,
+                )
                 try_count += 1
         return None
 
@@ -688,7 +691,9 @@ def query_fn(
             )
             return idx, result
         except Exception as e:
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}", exc_info=True)
+            logger.error(
+                f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}", exc_info=True
+            )
             try_count += 1
             if try_count == MAX_RETRIES:
                 # Return None result after max retries
@@ -741,7 +746,9 @@ def sample_kwargs_query_fn(
             )
             return idx, result
         except Exception as e:
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}", exc_info=True)
+            logger.error(
+                f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}", exc_info=True
+            )
             try_count += 1
             if try_count == MAX_RETRIES:
                 # Return None result after max retries
