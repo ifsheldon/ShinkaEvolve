@@ -430,8 +430,11 @@ class AsyncProgramDatabase:
         meta_patch_data: Optional[Dict[str, Any]] = None,
         code_embedding: Optional[List[float]] = None,
         embed_cost: float = 0.0,
-    ) -> None:
+    ) -> List[Program]:
         """Async version of adding a program to the database.
+
+        Returns a list of island copy Programs created during this add
+        (empty if no copies were needed).
 
         Args:
             program: Program to add
@@ -494,7 +497,9 @@ class AsyncProgramDatabase:
 
             # Use semaphore to prevent concurrent database operations that can deadlock
             async with self._db_semaphore:
-                await self._add_program_fast_async(prepared_program)
+                island_copies = await self._add_program_fast_async(
+                    prepared_program
+                )
 
                 # Sync island_idx back — assign_island() sets it inside the
                 # thread, but the caller's Program reference still has the old
@@ -514,6 +519,7 @@ class AsyncProgramDatabase:
                 self._schedule_embedding_recomputation()
 
             self._debug_track_end(op_id, success=True)
+            return island_copies
 
         except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
@@ -626,10 +632,14 @@ class AsyncProgramDatabase:
             # Restore original methods
             self.sync_db._recompute_embeddings_and_clusters = original_embedding_method
 
-    async def _add_program_fast_async(self, program: Program):
-        """Async fast program addition that defers expensive operations."""
+    async def _add_program_fast_async(self, program: Program) -> List[Program]:
+        """Async fast program addition that defers expensive operations.
 
-        def add_program_sync():
+        Returns a list of island copy Programs created during this add
+        (empty if no copies were needed).
+        """
+
+        def add_program_sync() -> List[Program]:
             # Create a new database instance for this thread with full functionality
             from .dbase import ProgramDatabase
 
@@ -657,6 +667,20 @@ class AsyncProgramDatabase:
                         original_embedding_method
                     )
 
+                # Read back any island copies that were created
+                island_copies: List[Program] = []
+                copy_ids = getattr(
+                    thread_db.island_manager, "_last_copy_ids", None
+                )
+                if copy_ids:
+                    try:
+                        island_copies = thread_db.get_programs_by_ids(copy_ids)
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not read island copies: %s", exc
+                        )
+                return island_copies
+
             except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
                 logger.error("Error in add_program_sync: %s", exc)
                 raise
@@ -667,7 +691,7 @@ class AsyncProgramDatabase:
 
         # Run the thread-safe database operation in an executor
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(self.executor, add_program_sync)
+        return await loop.run_in_executor(self.executor, add_program_sync)
 
     def _schedule_embedding_recomputation(self):
         """Schedule embedding recomputation as a background task."""

@@ -798,7 +798,9 @@ class ProgramDatabase:
             logger.info(
                 f"Creating copies of initial program {program.id} for all islands"
             )
-            self.island_manager.copy_program_to_islands(program)
+            copy_ids = self.island_manager.copy_program_to_islands(program)
+            # Store for async callers to retrieve
+            self.island_manager._last_copy_ids = copy_ids
             # Remove the flag from the original program's metadata
             if program.metadata:
                 program.metadata.pop("_needs_island_copies", None)

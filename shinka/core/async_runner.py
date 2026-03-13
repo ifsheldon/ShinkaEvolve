@@ -1333,10 +1333,12 @@ class ShinkaEvolveRunner:
             )
 
         # Add to database
-        await self.async_db.add_program_async(initial_program)
+        island_copies = await self.async_db.add_program_async(initial_program)
 
-        # Notify frontend about the initial program
+        # Notify frontend about the initial program and any island copies
         await self.event_notifier.notify_generated(initial_program)
+        for copy in island_copies:
+            await self.event_notifier.notify_generated(copy)
 
         # Add initial program costs to in-memory total for accurate budget tracking
         initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
