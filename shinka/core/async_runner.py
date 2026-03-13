@@ -2460,6 +2460,7 @@ class ShinkaEvolveRunner:
                     generation=generation,
                     code=code_content,
                     code_diff=code_diff,
+                    island_idx=parent_program.island_idx,
                     metadata=meta_patch_data,
                     archive_inspiration_ids=running_job.archive_insp_ids,
                     top_k_inspiration_ids=running_job.top_k_insp_ids,

@@ -496,6 +496,11 @@ class AsyncProgramDatabase:
             async with self._db_semaphore:
                 await self._add_program_fast_async(prepared_program)
 
+                # Sync island_idx back — assign_island() sets it inside the
+                # thread, but the caller's Program reference still has the old
+                # value.  notify_generated() relies on the original object.
+                program.island_idx = prepared_program.island_idx
+
                 # Track programs and schedule embedding recomputation (inside semaphore)
                 async with self._lock:
                     self.programs_added_since_embedding_recompute += 1
