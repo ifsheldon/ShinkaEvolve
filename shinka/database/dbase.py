@@ -191,6 +191,10 @@ class Program:
     # Meta-prompt evolution: track which system prompt generated this program
     system_prompt_id: Optional[str] = None
 
+    # Novelty detection results (populated by NoveltyDetector after evaluation)
+    novelty_level: str = "none"  # NoveltyLevel enum value: "none", "moderate", "high"
+    novelty_data: Dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
         data = asdict(self)
@@ -441,7 +445,9 @@ class ProgramDatabase:
                 metadata TEXT,      -- JSON serialized Dict[str, Any]
                 migration_history TEXT, -- JSON of migration events
                 island_idx INTEGER,  -- Add island_idx to the schema
-                system_prompt_id TEXT  -- ID of system prompt that generated this program
+                system_prompt_id TEXT,  -- ID of system prompt that generated this program
+                novelty_level TEXT DEFAULT 'none',
+                novelty_data TEXT
             )
             """
         )
@@ -522,6 +528,30 @@ class ProgramDatabase:
                 logger.info("Successfully added system_prompt_id column")
         except sqlite3.Error as e:
             logger.error(f"Error during system_prompt_id migration: {e}")
+
+        # Migration 3: Add novelty_level column if it doesn't exist
+        try:
+            if "novelty_level" not in columns:
+                logger.info("Adding novelty_level column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_level TEXT DEFAULT 'none'"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_level column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_level migration: {e}")
+
+        # Migration 4: Add novelty_data column if it doesn't exist
+        try:
+            if "novelty_data" not in columns:
+                logger.info("Adding novelty_data column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_data TEXT"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_data column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_data migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -686,9 +716,9 @@ class ProgramDatabase:
                     text_feedback, complexity, embedding, embedding_pca_2d,
                     embedding_pca_3d, embedding_cluster_id, correct,
                     children_count, metadata, island_idx, migration_history,
-                    system_prompt_id)
+                    system_prompt_id, novelty_level, novelty_data)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     program.id,
@@ -715,6 +745,8 @@ class ProgramDatabase:
                     program.island_idx,
                     migration_history_json,
                     program.system_prompt_id,
+                    program.novelty_level,
+                    json.dumps(program.novelty_data) if program.novelty_data else None,
                 ),
             )
 
@@ -1072,6 +1104,33 @@ class ProgramDatabase:
         )
 
         return parent, archive_inspirations, top_k_inspirations
+
+    def sample_inspirations_for_parent(
+        self,
+        parent: Program,
+        num_archive_insp: int,
+        num_top_k_insp: int,
+    ) -> Tuple[List[Program], List[Program]]:
+        """Sample inspirations for a specific parent program.
+
+        Used by interactive actions (suggest/merge) where the parent is
+        chosen by the expert rather than by the sampling strategy.
+        """
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        context_selector = CombinedContextSelector(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            get_program_func=self.get,
+            best_program_id=self.best_program_id,
+            get_island_idx_func=(
+                self.island_manager.get_island_idx if self.island_manager else None
+            ),
+            program_from_row_func=self._program_from_row,
+        )
+        return context_selector.sample_context(parent, num_archive_insp, num_top_k_insp)
 
     @db_retry()
     def sample_with_fix_mode(
@@ -2715,6 +2774,7 @@ class ProgramDatabase:
                         "public_metrics",
                         "private_metrics",
                         "metadata",
+                        "novelty_data",
                         "archive_inspiration_ids",
                         "top_k_inspiration_ids",
                         "embedding",

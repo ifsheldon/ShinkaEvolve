@@ -36,7 +36,7 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.embed import AsyncEmbeddingClient
-from shinka.launch import JobScheduler, JobConfig
+from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -49,6 +49,7 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
+from shinka.core.novelty_detector import NoveltyDetector, NoveltyLevel
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
     AsyncSystemPromptEvolver,
@@ -317,6 +318,12 @@ class ShinkaEvolveRunner:
         else:
             self.embedding_client = None
 
+        # Propagate eval_timeout to LocalJobConfig.time if set
+        if evo_config.eval_timeout and isinstance(job_config, LocalJobConfig):
+            h, remainder = divmod(evo_config.eval_timeout, 3600)
+            m, s = divmod(remainder, 60)
+            job_config.time = f"{h:02d}:{m:02d}:{s:02d}"
+
         # Job scheduler
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type, config=job_config, verbose=verbose
@@ -373,6 +380,12 @@ class ShinkaEvolveRunner:
             )
         else:
             self.novelty_judge = None
+
+        # Initialize NoveltyDetector for post-evaluation novelty classification
+        self.novelty_detector = NoveltyDetector(
+            novelty_function_path=evo_config.novelty_function_path,
+            results_dir=str(self.results_dir),
+        )
 
         # Meta-prompt evolution components
         # These will be initialized in _setup_async after results_dir is set
@@ -2713,8 +2726,20 @@ class ShinkaEvolveRunner:
         resample_attempt: int = 1,
         model_sample_probs: Optional[List[float]] = None,
         model_posterior: Optional[List[float]] = None,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> Optional[Tuple[Optional[str], Dict[str, Any], bool]]:
-        """Run async patch generation."""
+        """Run async patch generation.
+
+        Parameters
+        ----------
+        patch_type_override : str, optional
+            Force a specific patch type (e.g. ``"full"``, ``"cross"``)
+            instead of sampling from the configured distribution.
+        user_suggestions : str, optional
+            Expert suggestion text appended to the user message so
+            the LLM sees it regardless of patch type.
+        """
         # Initialize prompt-related variables outside try block for exception handling
         current_prompt_id: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
@@ -2733,6 +2758,8 @@ class ShinkaEvolveRunner:
                 archive_inspirations=archive_programs,
                 top_k_inspirations=top_k_programs,
                 meta_recommendations=meta_recs,
+                patch_type_override=patch_type_override,
+                user_suggestions=user_suggestions,
             )
 
             # Restore original task_sys_msg
@@ -3098,6 +3125,48 @@ class ShinkaEvolveRunner:
                 logger.info(
                     f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
                 )
+
+                # --- Post-evaluation novelty detection ---
+                try:
+                    parent_prog_for_novelty = None
+                    if job.parent_id:
+                        parent_prog_for_novelty = await self.async_db.get_async(
+                            job.parent_id
+                        )
+
+                    inspiration_programs = []
+                    for insp_id in (job.archive_insp_ids or []) + (
+                        job.top_k_insp_ids or []
+                    ):
+                        insp = await self.async_db.get_async(insp_id)
+                        if insp:
+                            inspiration_programs.append(insp)
+
+                    novelty_result = self.novelty_detector.detect(
+                        program=program,
+                        parent=parent_prog_for_novelty,
+                        inspirations=inspiration_programs,
+                    )
+
+                    if novelty_result.level != NoveltyLevel.NONE:
+                        program.novelty_level = novelty_result.level.value
+                        program.novelty_data = novelty_result.display_data or {}
+                        # Use the sync db's cursor for the update
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None,
+                            self._update_novelty_in_db,
+                            program.id,
+                            novelty_result.level.value,
+                            novelty_result.display_data,
+                        )
+                        logger.info(
+                            f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
+                            f"Program {program.id} (gen {program.generation}, "
+                            f"score {program.combined_score})"
+                        )
+                except Exception as e:
+                    logger.warning(f"Novelty detection failed for {program.id}: {e}")
 
                 # Update prompt fitness if prompt evolution is enabled
                 if system_prompt_id and self.evo_config.evolve_prompts:
@@ -3908,6 +3977,26 @@ class ShinkaEvolveRunner:
                 f"id {best_program.id[:6]}... "
                 f"Copied to {best_dir}"
             )
+
+    def _update_novelty_in_db(
+        self, program_id: str, novelty_level: str, display_data: Optional[Dict]
+    ) -> None:
+        """Update novelty fields in the database (runs in executor thread)."""
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(self.db.config.db_path), timeout=30.0)
+        try:
+            conn.execute(
+                "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
+                (
+                    novelty_level,
+                    json.dumps(display_data or {}),
+                    program_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _extract_code_from_response(self, response_content: str) -> Optional[str]:
         """Extract code from LLM response."""

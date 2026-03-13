@@ -64,3 +64,9 @@ class EvolutionConfig:
     prompt_epsilon: float = 0.1
     prompt_evo_top_k_programs: int = 3
     prompt_percentile_recompute_interval: int = 20
+
+    # Evaluation timeout
+    eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
+
+    # Post-evaluation novelty detection
+    novelty_function_path: Optional[str] = None  # Path to custom novelty.py
