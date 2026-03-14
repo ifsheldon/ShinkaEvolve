@@ -141,12 +141,12 @@ class EventNotifier:
             client = await _get_client()
             resp = await client.post(url, json=payload)
             if resp.status_code >= 400:
-                logger.warning(
+                logger.error(
                     "Callback POST %s returned %d: %s",
                     url,
                     resp.status_code,
                     resp.text[:200],
                 )
         except Exception as exc:
-            # Fire-and-forget: log and move on.
+            # Network failure — transient, recovered by fallback polling.
             logger.warning("Callback POST to %s failed: %s", url, exc)
