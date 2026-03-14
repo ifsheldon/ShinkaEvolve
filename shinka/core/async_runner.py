@@ -41,6 +41,7 @@ from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
+    get_reasoning_embedding_async,
     write_file_async,
 )
 from shinka.edit import summarize_diff
@@ -131,6 +132,7 @@ class AsyncRunningJob:
     code_diff: Optional[str] = None
     meta_patch_data: Dict[str, Any] = field(default_factory=dict)
     code_embedding: Optional[List[float]] = None
+    reasoning_embedding: Optional[List[float]] = None
     embed_cost: float = 0.0
     novelty_cost: float = 0.0  # Track novelty checking cost
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
@@ -390,6 +392,8 @@ class ShinkaEvolveRunner:
                 language=evo_config.language,
                 similarity_threshold=evo_config.code_embed_sim_threshold,
                 max_novelty_attempts=evo_config.max_novelty_attempts,
+                reasoning_similarity_threshold=evo_config.reasoning_embed_sim_threshold,
+                use_reasoning_novelty=evo_config.use_reasoning_novelty,
             )
             self.novelty_judge = AsyncNoveltyJudge(
                 sync_novelty_judge,
@@ -1229,6 +1233,15 @@ class ShinkaEvolveRunner:
             if self.verbose and code_embedding:
                 logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
 
+            # Compute reasoning embedding only for LLM-generated initial programs
+            # (file-based seed programs have no LLM reasoning to embed)
+            reasoning_embedding = None
+            if llm_metadata:
+                reasoning_embedding, re_cost = (
+                    await self._get_reasoning_embedding_async(llm_metadata)
+                )
+                e_cost += re_cost
+
             # Extract metrics properly like the sync version
             correct_val = results.get("correct", {}).get("correct", False)
             metrics_val = results.get("metrics", {})
@@ -1275,6 +1288,7 @@ class ShinkaEvolveRunner:
                 text_feedback=text_feedback,
                 timestamp=datetime.now().timestamp(),
                 embedding=code_embedding,
+                reasoning_embedding=reasoning_embedding or [],
                 metadata=base_metadata,
             )
 
@@ -1287,13 +1301,23 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.warning(f"Initial program evaluation failed: {e}")
 
-            # Still try to compute embedding even if evaluation failed
+            # Still try to compute embeddings even if evaluation failed
             try:
                 code_embedding, e_cost = await self._get_code_embedding_async(
                     exec_fname
                 )
             except Exception:
                 code_embedding, e_cost = None, 0.0
+
+            reasoning_embedding = None
+            if llm_metadata:
+                try:
+                    reasoning_embedding, re_cost = (
+                        await self._get_reasoning_embedding_async(llm_metadata)
+                    )
+                    e_cost += re_cost
+                except Exception:
+                    pass
 
             # Build base metadata for fallback
             base_metadata = {
@@ -1329,11 +1353,14 @@ class ShinkaEvolveRunner:
                 correct=True,
                 timestamp=datetime.now().timestamp(),
                 embedding=code_embedding,
+                reasoning_embedding=reasoning_embedding or [],
                 metadata=base_metadata,
             )
 
         # Add to database
-        island_copies = await self.async_db.add_program_async(initial_program)
+        island_copies = await self.async_db.add_program_async(
+            initial_program, embed_cost=e_cost
+        )
 
         # Notify frontend about the initial program and any island copies
         await self.event_notifier.notify_generated(initial_program)
@@ -2322,6 +2349,11 @@ class ShinkaEvolveRunner:
                     f"Code embedding completed for generation {generation} (cost: ${e_cost:.4f})"
                 )
 
+            reasoning_embedding, re_cost = await self._get_reasoning_embedding_async(
+                meta_patch_data
+            )
+            embed_cost += re_cost
+
             if not code_embedding:
                 if self.novelty_judge:
                     self.novelty_judge.log_novelty_skip_message("no embedding")
@@ -2339,7 +2371,8 @@ class ShinkaEvolveRunner:
                         should_accept,
                         novelty_metadata,
                     ) = await self.novelty_judge.assess_novelty_with_rejection_sampling_async(
-                        exec_fname, code_embedding, parent_program, self.db
+                        exec_fname, code_embedding, parent_program, self.db,
+                        reasoning_embedding=reasoning_embedding,
                     )
 
                     # Update costs and metadata from novelty assessment (same as sync runner)
@@ -2415,6 +2448,7 @@ class ShinkaEvolveRunner:
                     code_diff=code_diff,
                     meta_patch_data=meta_patch_data,
                     code_embedding=code_embedding,
+                    reasoning_embedding=reasoning_embedding,
                     embed_cost=embed_cost,
                     novelty_cost=novelty_total_cost,  # Store novelty cost in running job
                     proposal_task_id=task_id,
@@ -3039,6 +3073,15 @@ class ShinkaEvolveRunner:
 
         return await get_code_embedding_async(exec_fname, self.embedding_client)
 
+    async def _get_reasoning_embedding_async(
+        self, metadata: dict
+    ) -> Tuple[Optional[List[float]], float]:
+        """Get reasoning embedding asynchronously from metadata."""
+        if not self.embedding_client:
+            return None, 0.0
+
+        return await get_reasoning_embedding_async(metadata, self.embedding_client)
+
     async def _process_completed_jobs_safely(
         self, completed_jobs: List[AsyncRunningJob]
     ):
@@ -3169,6 +3212,7 @@ class ShinkaEvolveRunner:
                 top_k_inspiration_ids=job.top_k_insp_ids,
                 code_diff=job.code_diff,
                 embedding=job.code_embedding or [],
+                reasoning_embedding=job.reasoning_embedding or [],
                 system_prompt_id=system_prompt_id,  # Track evolved prompt
                 metadata=program_metadata,
             )
@@ -3188,6 +3232,7 @@ class ShinkaEvolveRunner:
                         code_diff=job.code_diff,
                         meta_patch_data=job.meta_patch_data,
                         code_embedding=job.code_embedding,
+                        reasoning_embedding=job.reasoning_embedding,
                         embed_cost=job.embed_cost,
                     ),
                     timeout=30.0,  # 30 second timeout for DB operations

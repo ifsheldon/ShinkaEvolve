@@ -150,6 +150,7 @@ class AsyncProgramDatabase:
         code_diff: Optional[str] = None,
         meta_patch_data: Optional[Dict[str, Any]] = None,
         code_embedding: Optional[List[float]] = None,
+        reasoning_embedding: Optional[List[float]] = None,
         embed_cost: float = 0.0,
         complexity_override: Optional[float] = None,
         code_metrics: Optional[Dict[str, Any]] = None,
@@ -190,6 +191,11 @@ class AsyncProgramDatabase:
             embedding=list(
                 code_embedding if code_embedding is not None else program.embedding
             ),
+            reasoning_embedding=list(
+                reasoning_embedding
+                if reasoning_embedding is not None
+                else program.reasoning_embedding
+            ),
             metadata=metadata,
         )
 
@@ -200,6 +206,7 @@ class AsyncProgramDatabase:
         program.code_diff = updated_program.code_diff
         program.complexity = updated_program.complexity
         program.embedding = updated_program.embedding
+        program.reasoning_embedding = updated_program.reasoning_embedding
         program.metadata = updated_program.metadata
         return updated_program
 
@@ -429,6 +436,7 @@ class AsyncProgramDatabase:
         code_diff: Optional[str] = None,
         meta_patch_data: Optional[Dict[str, Any]] = None,
         code_embedding: Optional[List[float]] = None,
+        reasoning_embedding: Optional[List[float]] = None,
         embed_cost: float = 0.0,
     ) -> List[Program]:
         """Async version of adding a program to the database.
@@ -490,6 +498,7 @@ class AsyncProgramDatabase:
                 code_diff=code_diff,
                 meta_patch_data=meta_patch_data,
                 code_embedding=code_embedding,
+                reasoning_embedding=reasoning_embedding,
                 embed_cost=embed_cost,
                 complexity_override=computed_complexity,
                 code_metrics=code_metrics,

@@ -54,6 +54,7 @@ class ProgramData:
     public_metrics: Dict[str, Any]
     private_metrics: Dict[str, Any]
     embedding: List[float]
+    reasoning_embedding: List[float]
     code_diff: Optional[str]
     metadata: Dict[str, Any]
 
@@ -277,6 +278,7 @@ class NoveltyDetector:
             public_metrics={},
             private_metrics={},
             embedding=[],
+            reasoning_embedding=[],
             code_diff=None,
             metadata={},
         )
@@ -288,6 +290,7 @@ class NoveltyDetector:
             public_metrics={},
             private_metrics={},
             embedding=[],
+            reasoning_embedding=[],
             code_diff=None,
             metadata={},
         )
@@ -356,6 +359,7 @@ class NoveltyDetector:
             public_metrics=program.public_metrics or {},
             private_metrics=program.private_metrics or {},
             embedding=program.embedding or [],
+            reasoning_embedding=program.reasoning_embedding or [],
             code_diff=program.code_diff,
             metadata=program.metadata or {},
         )

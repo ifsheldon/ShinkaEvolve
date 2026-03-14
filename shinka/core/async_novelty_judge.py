@@ -65,6 +65,7 @@ class AsyncNoveltyJudge:
         code_embedding: List[float],
         parent_program: Program,
         db,
+        reasoning_embedding: Optional[List[float]] = None,
     ) -> Tuple[bool, Dict[str, Any]]:
         """Async version of novelty assessment matching sync runner logic.
 
@@ -114,11 +115,36 @@ class AsyncNoveltyJudge:
             novelty_metadata["max_similarity"] = max_similarity
             novelty_metadata["similarity_scores"] = similarity_scores
 
+            # Reasoning similarity check
+            max_reasoning_similarity = 0.0
+            reasoning_similarity_scores = []
+            if self.sync_judge.use_reasoning_novelty and reasoning_embedding:
+                reasoning_similarity_scores = await loop.run_in_executor(
+                    None,
+                    db.compute_reasoning_similarity_thread_safe,
+                    reasoning_embedding,
+                    parent_program.island_idx,
+                )
+                if reasoning_similarity_scores:
+                    max_reasoning_similarity = max(reasoning_similarity_scores)
+
+            novelty_metadata["max_reasoning_similarity"] = max_reasoning_similarity
+            novelty_metadata["reasoning_similarity_scores"] = reasoning_similarity_scores
+
+            # Combined decision: reject if EITHER dimension is too similar
+            effective_similarity = max(max_similarity, max_reasoning_similarity)
+            effective_threshold = min(
+                self.sync_judge.similarity_threshold,
+                self.sync_judge.reasoning_similarity_threshold
+                if self.sync_judge.use_reasoning_novelty
+                else 1.0,
+            )
+
             # First check: embedding similarity threshold (same as sync version)
-            if max_similarity <= self.sync_judge.similarity_threshold:
+            if effective_similarity <= effective_threshold:
                 logger.info(
                     f"NOVELTY CHECK: Accepting program due to low similarity "
-                    f"({max_similarity:.3f} <= {self.sync_judge.similarity_threshold})"
+                    f"({effective_similarity:.3f} <= {effective_threshold})"
                 )
                 return True, novelty_metadata
 
@@ -164,7 +190,7 @@ class AsyncNoveltyJudge:
             if should_reject:
                 logger.info(
                     f"NOVELTY CHECK: Rejecting program due to high similarity "
-                    f"({max_similarity:.3f} > {self.sync_judge.similarity_threshold})"
+                    f"({effective_similarity:.3f} > {effective_threshold})"
                     + (
                         f" and LLM novelty check (cost: {novelty_cost:.4f})"
                         if novelty_cost > 0
@@ -175,7 +201,7 @@ class AsyncNoveltyJudge:
             else:
                 logger.info(
                     f"NOVELTY CHECK: Accepting program despite high similarity "
-                    f"({max_similarity:.3f} > {self.sync_judge.similarity_threshold}) "
+                    f"({effective_similarity:.3f} > {effective_threshold}) "
                     f"due to LLM novelty check (cost: {novelty_cost:.4f})."
                 )
                 return True, novelty_metadata

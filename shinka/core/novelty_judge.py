@@ -17,11 +17,15 @@ class NoveltyJudge:
         language: str = "python",
         similarity_threshold: float = 1.0,
         max_novelty_attempts: int = 3,
+        reasoning_similarity_threshold: float = 0.95,
+        use_reasoning_novelty: bool = False,
     ):
         self.novelty_llm_client = novelty_llm_client
         self.language = language
         self.similarity_threshold = similarity_threshold
         self.max_novelty_attempts = max_novelty_attempts
+        self.reasoning_similarity_threshold = reasoning_similarity_threshold
+        self.use_reasoning_novelty = use_reasoning_novelty
 
     def should_check_novelty(
         self,
@@ -63,6 +67,7 @@ class NoveltyJudge:
         code_embedding: List[float],
         parent_program: Program,
         database,
+        reasoning_embedding: Optional[List[float]] = None,
     ) -> Tuple[bool, dict]:
         """
         Perform novelty assessment with rejection sampling.
@@ -107,11 +112,33 @@ class NoveltyJudge:
             novelty_metadata["max_similarity"] = max_similarity
             novelty_metadata["similarity_scores"] = similarity_scores
 
-            if max_similarity <= self.similarity_threshold:
+            # Reasoning similarity check
+            max_reasoning_similarity = 0.0
+            reasoning_similarity_scores = []
+            if self.use_reasoning_novelty and reasoning_embedding:
+                reasoning_similarity_scores = database.compute_reasoning_similarity(
+                    reasoning_embedding, parent_program.island_idx
+                )
+                if reasoning_similarity_scores:
+                    max_reasoning_similarity = max(reasoning_similarity_scores)
+
+            novelty_metadata["max_reasoning_similarity"] = max_reasoning_similarity
+            novelty_metadata["reasoning_similarity_scores"] = reasoning_similarity_scores
+
+            # Combined decision: reject if EITHER dimension is too similar
+            effective_similarity = max(max_similarity, max_reasoning_similarity)
+            effective_threshold = min(
+                self.similarity_threshold,
+                self.reasoning_similarity_threshold
+                if self.use_reasoning_novelty
+                else 1.0,
+            )
+
+            if effective_similarity <= effective_threshold:
                 logger.info(
                     f"NOVELTY CHECK {attempt + 1}/{self.max_novelty_attempts}: "
                     f"Accepting program due to low similarity "
-                    f"({max_similarity:.3f} <= {self.similarity_threshold})"
+                    f"({effective_similarity:.3f} <= {effective_threshold})"
                 )
                 return True, novelty_metadata
 
@@ -145,7 +172,7 @@ class NoveltyJudge:
                 logger.info(
                     f"NOVELTY CHECK {attempt + 1}/{self.max_novelty_attempts}: "
                     f"Rejecting program due to high similarity "
-                    f"({max_similarity:.3f} > {self.similarity_threshold})"
+                    f"({effective_similarity:.3f} > {effective_threshold})"
                     + (
                         f" and LLM novelty check (cost: {novelty_cost:.4f})"
                         if novelty_cost > 0
@@ -159,7 +186,7 @@ class NoveltyJudge:
                 logger.info(
                     f"NOVELTY CHECK {attempt + 1}/{self.max_novelty_attempts}: "
                     f"Accepting program despite high similarity "
-                    f"({max_similarity:.3f} > {self.similarity_threshold}) "
+                    f"({effective_similarity:.3f} > {effective_threshold}) "
                     f"due to LLM novelty check (cost: {novelty_cost:.4f})."
                 )
                 return True, novelty_metadata
