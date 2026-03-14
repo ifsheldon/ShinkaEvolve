@@ -699,6 +699,16 @@ class CombinedIslandManager:
         )
         return created_ids
 
+    def get_and_clear_last_copy_ids(self) -> List[str]:
+        """Return and clear the IDs produced by the last ``copy_program_to_islands`` call.
+
+        This provides a clean public contract for the async layer to
+        retrieve island-copy IDs without reaching into private state.
+        """
+        ids = getattr(self, "_last_copy_ids", None) or []
+        self._last_copy_ids: List[str] = []
+        return ids
+
     def needs_island_copies(self, program: Any) -> bool:
         """Check if a program needs to be copied to other islands."""
         return program.metadata is not None and program.metadata.get(

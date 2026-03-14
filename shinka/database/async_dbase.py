@@ -669,9 +669,7 @@ class AsyncProgramDatabase:
 
                 # Read back any island copies that were created
                 island_copies: List[Program] = []
-                copy_ids = getattr(
-                    thread_db.island_manager, "_last_copy_ids", None
-                )
+                copy_ids = thread_db.island_manager.get_and_clear_last_copy_ids()
                 if copy_ids:
                     try:
                         island_copies = thread_db.get_programs_by_ids(copy_ids)

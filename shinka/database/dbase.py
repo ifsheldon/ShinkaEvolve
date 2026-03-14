@@ -799,7 +799,7 @@ class ProgramDatabase:
                 f"Creating copies of initial program {program.id} for all islands"
             )
             copy_ids = self.island_manager.copy_program_to_islands(program)
-            # Store for async callers to retrieve
+            # Store so async callers can retrieve via get_and_clear_last_copy_ids()
             self.island_manager._last_copy_ids = copy_ids
             # Remove the flag from the original program's metadata
             if program.metadata:
