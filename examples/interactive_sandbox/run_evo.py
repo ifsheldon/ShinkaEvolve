@@ -296,6 +296,8 @@ def _create_evo_config() -> EvolutionConfig:
         ),
         embedding_model="mock-embedding",  # use mocked embedding
         code_embed_sim_threshold=0.95,  # enable novelty rejection
+        reasoning_embed_sim_threshold=0.95,  # reasoning embedding threshold
+        use_reasoning_novelty=True,  # enable combined code+reasoning novelty
         init_program_path="initial.py",
         results_dir="results_sandbox",
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error

@@ -631,6 +631,8 @@ class CombinedIslandManager:
             embedding_json = json.dumps(program.embedding or [])
             embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
             embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
+            reasoning_embedding_json = json.dumps(program.reasoning_embedding or [])
+            reasoning_pca_2d_json = json.dumps(program.reasoning_embedding_pca_2d or [])
             migration_history_json = json.dumps(program.migration_history or [])
             # Insert the copy into the database
             # Handle text_feedback - convert to string if it's a list
@@ -646,10 +648,13 @@ class CombinedIslandManager:
                     top_k_inspiration_ids, generation, timestamp, code_diff,
                     combined_score, public_metrics, private_metrics,
                     text_feedback, complexity, embedding, embedding_pca_2d,
-                    embedding_pca_3d, embedding_cluster_id, correct,
-                    children_count, metadata, island_idx, migration_history)
+                    embedding_pca_3d, embedding_cluster_id,
+                    reasoning_embedding, reasoning_embedding_pca_2d,
+                    reasoning_embedding_cluster_id,
+                    correct, children_count, metadata, island_idx,
+                    migration_history)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id,
@@ -670,6 +675,9 @@ class CombinedIslandManager:
                     embedding_pca_2d_json,
                     embedding_pca_3d_json,
                     program.embedding_cluster_id,
+                    reasoning_embedding_json,
+                    reasoning_pca_2d_json,
+                    program.reasoning_embedding_cluster_id,
                     program.correct,
                     program.children_count,
                     metadata_json,
@@ -835,6 +843,8 @@ class CombinedIslandManager:
         embedding_json = source_program.get("embedding") or "[]"
         embedding_pca_2d_json = source_program.get("embedding_pca_2d") or "[]"
         embedding_pca_3d_json = source_program.get("embedding_pca_3d") or "[]"
+        reasoning_embedding_json = source_program.get("reasoning_embedding") or "[]"
+        reasoning_pca_2d_json = source_program.get("reasoning_embedding_pca_2d") or "[]"
         migration_history_json = source_program.get("migration_history") or "[]"
         text_feedback_str = source_program.get("text_feedback") or ""
 
@@ -846,10 +856,13 @@ class CombinedIslandManager:
                 top_k_inspiration_ids, generation, timestamp, code_diff,
                 combined_score, public_metrics, private_metrics,
                 text_feedback, complexity, embedding, embedding_pca_2d,
-                embedding_pca_3d, embedding_cluster_id, correct,
-                children_count, metadata, island_idx, migration_history)
+                embedding_pca_3d, embedding_cluster_id,
+                reasoning_embedding, reasoning_embedding_pca_2d,
+                reasoning_embedding_cluster_id,
+                correct, children_count, metadata, island_idx,
+                migration_history)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?)
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -870,6 +883,9 @@ class CombinedIslandManager:
                 embedding_pca_2d_json,
                 embedding_pca_3d_json,
                 source_program.get("embedding_cluster_id"),
+                reasoning_embedding_json,
+                reasoning_pca_2d_json,
+                source_program.get("reasoning_embedding_cluster_id"),
                 source_program.get("correct", 0),
                 0,  # Children count will be updated as children are added
                 metadata_json,

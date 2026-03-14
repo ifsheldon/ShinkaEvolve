@@ -80,6 +80,7 @@ def _row_to_program_data(row: sqlite3.Row) -> ProgramData:
     correct_raw = row["correct"]
     correct = correct_raw in (True, 1, "true", "True", "1")
 
+    keys = row.keys()
     return ProgramData(
         id=row["id"],
         generation=row["generation"],
@@ -88,8 +89,11 @@ def _row_to_program_data(row: sqlite3.Row) -> ProgramData:
         public_metrics=_json_or_default(row["public_metrics"], {}),
         private_metrics=_json_or_default(row["private_metrics"], {}),
         embedding=_json_or_default(row["embedding"], []),
-        code_diff=row["code_diff"] if "code_diff" in row.keys() else None,
+        code_diff=row["code_diff"] if "code_diff" in keys else None,
         metadata=_json_or_default(row["metadata"], {}),
+        reasoning_embedding=_json_or_default(row["reasoning_embedding"], [])
+        if "reasoning_embedding" in keys
+        else [],
     )
 
 
