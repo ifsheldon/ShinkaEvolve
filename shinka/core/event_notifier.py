@@ -25,6 +25,8 @@ _client: Optional[httpx.AsyncClient] = None
 
 _TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=3.0, pool=3.0)
 
+_SHUTDOWN_DRAIN_TIMEOUT_S = 5.0
+
 
 async def _get_client() -> httpx.AsyncClient:
     global _client
@@ -43,6 +45,7 @@ class EventNotifier:
     def __init__(self, callback_url: Optional[str], db_path: str) -> None:
         self.callback_url = callback_url.rstrip("/") if callback_url else None
         self.db_path = db_path
+        self._pending_tasks: set[asyncio.Task[None]] = set()
         if self.callback_url:
             logger.info("EventNotifier: push callbacks → %s", self.callback_url)
         else:
@@ -82,7 +85,7 @@ class EventNotifier:
             "archive_inspiration_ids": archive_inspiration_ids or [],
             "top_k_inspiration_ids": top_k_inspiration_ids or [],
         }
-        asyncio.create_task(self._post(payload))
+        self._spawn(payload)
 
     async def notify_generated(self, program: "Program") -> None:
         """Notify that a program has completed evaluation and is in the DB."""
@@ -93,10 +96,29 @@ class EventNotifier:
             "db_path": self.db_path,
             "program": program.to_dict(),
         }
-        asyncio.create_task(self._post(payload))
+        self._spawn(payload)
 
     async def close(self) -> None:
-        """Shut down the shared HTTP client (call at runner teardown)."""
+        """Drain pending callbacks and shut down the shared HTTP client."""
+        if self._pending_tasks:
+            logger.info(
+                "EventNotifier: draining %d pending callback(s)…",
+                len(self._pending_tasks),
+            )
+            done, pending = await asyncio.wait(
+                self._pending_tasks, timeout=_SHUTDOWN_DRAIN_TIMEOUT_S
+            )
+            if pending:
+                logger.warning(
+                    "EventNotifier: %d callback(s) still pending after %.1fs — cancelling",
+                    len(pending),
+                    _SHUTDOWN_DRAIN_TIMEOUT_S,
+                )
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            self._pending_tasks.clear()
+
         global _client
         if _client is not None and not _client.is_closed:
             await _client.aclose()
@@ -105,6 +127,12 @@ class EventNotifier:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _spawn(self, payload: Dict[str, Any]) -> None:
+        """Create a tracked background task for the POST."""
+        task = asyncio.create_task(self._post(payload))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
     async def _post(self, payload: Dict[str, Any]) -> None:
         """POST *payload* to the callback endpoint.  Never raises."""
