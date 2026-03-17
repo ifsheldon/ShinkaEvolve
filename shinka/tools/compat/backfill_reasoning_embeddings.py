@@ -160,10 +160,21 @@ def backfill(
     if not dry_run:
         _ensure_reasoning_columns(conn)
 
-    rows = conn.execute(
-        "SELECT id, metadata, reasoning_embedding FROM programs "
-        "ORDER BY generation ASC, timestamp ASC"
-    ).fetchall()
+    # Check if reasoning_embedding column exists (may not in dry-run on old DBs)
+    cur = conn.execute("PRAGMA table_info(programs)")
+    columns = {row[1] for row in cur.fetchall()}
+    has_reasoning_col = "reasoning_embedding" in columns
+
+    if has_reasoning_col:
+        rows = conn.execute(
+            "SELECT id, metadata, reasoning_embedding FROM programs "
+            "ORDER BY generation ASC, timestamp ASC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, metadata FROM programs "
+            "ORDER BY generation ASC, timestamp ASC"
+        ).fetchall()
 
     stats: Dict[str, object] = {
         "total": len(rows),
@@ -178,7 +189,7 @@ def backfill(
     # Collect programs that need embedding
     to_embed: List[tuple] = []  # (id, text)
     for row in rows:
-        if not force:
+        if not force and has_reasoning_col:
             existing = _json_or_default(row["reasoning_embedding"], [])
             if isinstance(existing, list) and len(existing) > 0:
                 stats["skipped"] = int(stats["skipped"]) + 1
