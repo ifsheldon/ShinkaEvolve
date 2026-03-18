@@ -7,6 +7,9 @@
 import pandas as pd
 from pathlib import Path
 from typing import Optional, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Load pricing data from CSV
 _pricing_csv_path = Path(__file__).parent / "pricing.csv"
@@ -70,6 +73,25 @@ def _load_pricing_dataframe() -> pd.DataFrame:
 _PRICING_DF = _load_pricing_dataframe()
 
 
+def _get_model_row(model_name: str):
+    """Return a single normalized pricing row for a model name.
+
+    ``DataFrame.loc`` returns a ``DataFrame`` when the index contains duplicate
+    model names. Most callers expect a single row, so collapse duplicates to the
+    first row after verifying they are equivalent on the relevant fields.
+    """
+    row = _PRICING_DF.loc[model_name]
+    if isinstance(row, pd.DataFrame):
+        first_row = row.iloc[0]
+        if not row.eq(first_row).all(axis=None):
+            logger.warning(
+                "Pricing data has conflicting duplicate rows for model %s; using the first row.",
+                model_name,
+            )
+        return first_row
+    return row
+
+
 def get_model_prices(model_name: str, input_tokens: Optional[int] = None) -> dict:
     """Get both input and output prices for a model.
 
@@ -85,7 +107,7 @@ def get_model_prices(model_name: str, input_tokens: Optional[int] = None) -> dic
     """
     if model_name not in _PRICING_DF.index:
         raise ValueError(f"Model {model_name} not found in pricing data")
-    row = _PRICING_DF.loc[model_name]
+    row = _get_model_row(model_name)
 
     # Check if tiered pricing applies
     tier_threshold = row.get("tier_threshold")
@@ -147,25 +169,25 @@ def is_reasoning_model(model_name: str) -> bool:
     """Check if a model is a reasoning model."""
     if model_name not in _PRICING_DF.index:
         return False
-    return _PRICING_DF.loc[model_name, "is_reasoning"]
+    return bool(_get_model_row(model_name)["is_reasoning"])
 
 
 def get_provider(model_name: str) -> Optional[str]:
     """Get the provider for a given model."""
     if model_name not in _PRICING_DF.index:
         return None
-    return _PRICING_DF.loc[model_name, "provider"]
+    return str(_get_model_row(model_name)["provider"])
 
 
 def has_fixed_temperature(model_name: str) -> bool:
     """Check if a model requires temperature fixed to 1.0."""
     if model_name not in _PRICING_DF.index:
         return False
-    return _PRICING_DF.loc[model_name, "think_temp_fixed"]
+    return bool(_get_model_row(model_name)["think_temp_fixed"])
 
 
 def requires_reasoning(model_name: str) -> bool:
     """Check if a model requires reasoning effort to be set."""
     if model_name not in _PRICING_DF.index:
         return False
-    return _PRICING_DF.loc[model_name, "requires_reasoning"]
+    return bool(_get_model_row(model_name)["requires_reasoning"])
