@@ -368,6 +368,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable resume mode (manual interaction, do not clean previous run)",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Accepted for compatibility with start.py (always interactive).",
+    )
     args = parser.parse_args()
 
     main(resume=args.resume)
