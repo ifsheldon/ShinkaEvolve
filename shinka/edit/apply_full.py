@@ -8,6 +8,60 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _immutable_segments(text: str, mutable_ranges: list[tuple[int, int]]) -> list[str]:
+    """Extract the immutable (non-evolvable) text segments from *text*."""
+    segments: list[str] = []
+    last = 0
+    for start, end in mutable_ranges:
+        segments.append(text[last:start])
+        last = end
+    segments.append(text[last:])
+    return segments
+
+
+def _warn_immutable_drift(
+    original: str,
+    orig_ranges: list[tuple[int, int]],
+    patch: str,
+    patch_ranges: list[tuple[int, int]],
+) -> None:
+    """Log a warning when the patch changed code outside EVOLVE-BLOCK markers.
+
+    This catches cases where the LLM moved imports to the top level or
+    otherwise modified read-only regions.  Those changes are silently
+    discarded during merge, which can leave the result with missing
+    dependencies.
+    """
+    orig_segments = _immutable_segments(original, orig_ranges)
+    patch_segments = _immutable_segments(patch, patch_ranges)
+
+    # Normalize whitespace for comparison so trivial blank-line differences
+    # don't trigger false positives.
+    def _norm(s: str) -> str:
+        return "\n".join(line.rstrip() for line in s.strip().splitlines())
+
+    diffs: list[str] = []
+    n = max(len(orig_segments), len(patch_segments))
+    for i in range(n):
+        orig_seg = orig_segments[i] if i < len(orig_segments) else ""
+        patch_seg = patch_segments[i] if i < len(patch_segments) else ""
+        if _norm(orig_seg) != _norm(patch_seg):
+            diffs.append(
+                f"  segment {i}: original has {len(orig_seg)} chars, "
+                f"patch has {len(patch_seg)} chars"
+            )
+
+    if diffs:
+        detail = "\n".join(diffs)
+        logger.warning(
+            "Patch modified read-only code outside EVOLVE-BLOCK markers. "
+            "These changes will be discarded during merge, which may leave "
+            "the result with missing imports or broken references.\n"
+            "Mismatched immutable segments:\n%s",
+            detail,
+        )
+
+
 def apply_full_patch(
     patch_str: str,
     original_str: Optional[str] = None,
@@ -94,6 +148,14 @@ def apply_full_patch(
         if patch_has_both:
             # Patch contains both EVOLVE-BLOCK markers, extract from them
             patch_mutable_ranges = _mutable_ranges(patch_code)
+
+            # Validate: check if the patch modified immutable regions.
+            # Compare immutable sections between original and patch to detect
+            # changes (e.g. moved/added imports) that would be silently dropped.
+            _warn_immutable_drift(
+                original, mutable_ranges, patch_code, patch_mutable_ranges
+            )
+
             # Patch contains EVOLVE-BLOCK markers, extract from them
             for i, (start, end) in enumerate(mutable_ranges):
                 # Add immutable part before this mutable range
