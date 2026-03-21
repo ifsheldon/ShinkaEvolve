@@ -20,7 +20,8 @@ Describe the bug you identified and the fix you are applying. Include your analy
 ```
 </CODE>
 
-* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code. Do not change the code outside of these markers.
+* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Make sure your fixed program maintains the same inputs and outputs as the original program.
 * Focus on making the program correct first - performance optimization is secondary.
 * Make sure the file still runs after your changes.
