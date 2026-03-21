@@ -1075,6 +1075,45 @@ class AsyncProgramDatabase:
             self._debug_track_end(op_id, success=False)
             raise
 
+    async def get_distinct_generation_count_async(self) -> int:
+        """Count distinct generation numbers in the database.
+
+        More robust than total program count because it is unaffected by
+        island copies or dynamic island spawns.
+        """
+        op_id = self._debug_track_start("get_distinct_generation_count_async")
+        try:
+            loop = asyncio.get_event_loop()
+
+            def count_generations_thread_safe():
+                thread_db = None
+                try:
+                    from .dbase import ProgramDatabase
+
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    thread_db.cursor.execute(
+                        "SELECT COUNT(DISTINCT generation) AS gen_count FROM programs"
+                    )
+                    row = thread_db.cursor.fetchone()
+                    return int(row["gen_count"]) if row is not None else 0
+                finally:
+                    self._close_thread_db(
+                        thread_db, context="count_generations_thread_safe"
+                    )
+
+            result = await loop.run_in_executor(
+                self.executor, count_generations_thread_safe
+            )
+            self._debug_track_end(op_id, success=True)
+            return result
+        except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
+            self._debug_track_end(op_id, success=False)
+            logger.error("Error in get_distinct_generation_count_async: %s", exc)
+            return 0
+        except Exception:
+            self._debug_track_end(op_id, success=False)
+            raise
+
     async def get_top_programs_async(
         self, n: int = 10, correct_only: bool = True
     ) -> List[Program]:

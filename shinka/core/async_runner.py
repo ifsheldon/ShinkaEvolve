@@ -3555,56 +3555,43 @@ class ShinkaEvolveRunner:
 
         In async evolution, generations can complete out of order. For termination
         and progress tracking, what matters is the total count of completed work,
-        not whether it's contiguous. This counts all generations that have:
-        1. No running jobs AND
-        2. Programs in the database (successful evaluation)
+        not whether it's contiguous.
+
+        Uses ``COUNT(DISTINCT generation)`` which is robust against island
+        copies, dynamic island spawns, and other multi-program-per-generation
+        scenarios.
         """
-        # Get all generations that have running jobs
         running_generations = {job.generation for job in self.running_jobs}
 
-        # More efficient approach: get total program count and subtract running jobs
-        # This avoids expensive per-generation database queries
         try:
-            # Get total number of programs in database (much faster single query)
-            total_programs = await self.async_db.get_total_program_count_async()
-
-            # Account for island copies: the initial program gets duplicated
-            # (num_islands - 1) times, so we need to subtract these extra copies
-            num_islands = getattr(self.db_config, "num_islands", 1)
-            if num_islands > 1:
-                # Subtract the extra island copies of generation 0
-                island_copies = num_islands - 1
-                total_programs -= island_copies
-
-            # Each generation should have exactly 1 program when completed
-            # So completed generations = total programs - programs from running jobs
-            programs_from_running = len(self.running_jobs)
-
-            # Account for jobs in retry queue (completed eval but failed DB write)
-            # These jobs are not in running_jobs but also not in the database yet
-            programs_in_retry = len(self.failed_jobs_for_retry)
-
-            # The completed count is total programs minus running jobs
-            # and minus jobs waiting for DB retry
-            # (since each successful evaluation adds exactly 1 program)
-            calculated_completed = (
-                total_programs - programs_from_running - programs_in_retry
+            # Count distinct generation numbers in the database — each
+            # completed evaluation produces exactly one unique generation.
+            distinct_gens = (
+                await self.async_db.get_distinct_generation_count_async()
             )
 
-            # Debug logging when count doesn't change
+            # Subtract generations that are still running (evaluation in
+            # progress) and jobs waiting for DB retry.
+            programs_from_running = len(self.running_jobs)
+            programs_in_retry = len(self.failed_jobs_for_retry)
+
+            calculated_completed = (
+                distinct_gens - programs_from_running - programs_in_retry
+            )
+
             if (
                 self.verbose
                 and hasattr(self, "completed_generations")
                 and calculated_completed == self.completed_generations
             ):
                 logger.debug(
-                    f"📊 Completion calc: total_programs={total_programs}, "
+                    f"📊 Completion calc: distinct_gens={distinct_gens}, "
                     f"running={programs_from_running}, "
                     f"retry={programs_in_retry}, "
                     f"result={calculated_completed}"
                 )
 
-            self.completed_generations = calculated_completed
+            self.completed_generations = max(0, calculated_completed)
 
             # Ensure we don't exceed target generations
             max_gens = self.evo_config.num_generations
