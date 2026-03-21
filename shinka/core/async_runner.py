@@ -209,6 +209,8 @@ class ShinkaEvolveRunner:
                 ],
                 force=True,  # Override any existing logging config
             )
+            # Suppress noisy third-party loggers
+            logging.getLogger("httpx").setLevel(logging.WARNING)
         else:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
