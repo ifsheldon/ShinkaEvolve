@@ -571,6 +571,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             exec_fname = f"{gen_dir}/main.{self.lang_ext}"
             results_dir = f"{gen_dir}/results"
 
+            logger.info(
+                "Interactive %s gen %d: [1/8] setting up directories",
+                action_type, generation,
+            )
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
@@ -590,6 +594,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 )
 
             # --- Meta recommendations (best-effort) ----------------------
+            logger.info(
+                "Interactive %s gen %d: [2/8] fetching meta recommendations",
+                action_type, generation,
+            )
             meta_recs = None
             if self.meta_summarizer:
                 if self.evo_config.sample_single_meta_rec:
@@ -598,11 +606,20 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                     meta_recs, _, _ = self.meta_summarizer.get_current()
 
             # --- LLM model selection (transparent pass-through) -----------
+            logger.info(
+                "Interactive %s gen %d: [3/8] selecting LLM model",
+                action_type, generation,
+            )
             model_sample_probs, model_posterior = None, None
             if self.llm_selection is not None:
                 model_sample_probs, model_posterior = self.llm_selection.select_llm()
 
             # --- Run patch with interactive overrides ---------------------
+            logger.info(
+                "Interactive %s gen %d: [4/8] generating patch (LLM call)...",
+                action_type, generation,
+            )
+            t_patch_start = time.time()
             patch_result = await self._run_patch_async(
                 parent_program,
                 archive_programs,
@@ -614,21 +631,24 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 model_sample_probs=model_sample_probs,
                 model_posterior=model_posterior,
             )
+            t_patch_elapsed = time.time() - t_patch_start
 
             if not patch_result:
                 logger.warning(
-                    "Interactive %s: patch generation failed for gen %d",
-                    action_type,
-                    generation,
+                    "Interactive %s gen %d: patch generation failed after %.1fs",
+                    action_type, generation, t_patch_elapsed,
                 )
                 return None
 
             code_diff, meta_patch_data, success = patch_result
+            logger.info(
+                "Interactive %s gen %d: [5/8] patch generated in %.1fs (success=%s)",
+                action_type, generation, t_patch_elapsed, success,
+            )
             if not success:
                 logger.warning(
                     "Interactive %s: patch not successful for gen %d",
-                    action_type,
-                    generation,
+                    action_type, generation,
                 )
                 return None
 
@@ -638,11 +658,19 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 meta_patch_data["human_prompt"] = user_suggestions
 
             # --- Get code embedding ---------------------------------------
+            logger.info(
+                "Interactive %s gen %d: [6/8] computing code embedding",
+                action_type, generation,
+            )
             code_embedding, embed_cost = await self._get_code_embedding_async(
                 exec_fname
             )
 
             # --- Submit for evaluation (skip novelty check) ---------------
+            logger.info(
+                "Interactive %s gen %d: [7/8] submitting for evaluation",
+                action_type, generation,
+            )
             job_id = await self.scheduler.submit_async_nonblocking(
                 exec_fname, results_dir
             )
@@ -671,6 +699,13 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             self._update_avg_proposal_cost(proposal_total_cost)
 
             # --- Wait for evaluation slot if at capacity ------------------
+            if len(self.running_jobs) >= self.max_evaluation_jobs:
+                logger.info(
+                    "Interactive %s gen %d: waiting for eval slot "
+                    "(%d/%d jobs running)",
+                    action_type, generation,
+                    len(self.running_jobs), self.max_evaluation_jobs,
+                )
             while len(self.running_jobs) >= self.max_evaluation_jobs:
                 if self.should_stop.is_set():
                     try:
@@ -687,6 +722,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             self.slot_available.set()
 
             # Notify frontend that a program is queued for evaluation
+            logger.info(
+                "Interactive %s gen %d: [8/8] notifying frontend (job_id=%s)",
+                action_type, generation, job_id,
+            )
             code_content = await self._read_file_async(exec_fname) or ""
             await self.event_notifier.notify_queued(
                 program_id=running_job.program_id,
@@ -710,7 +749,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             return running_job
 
         except Exception as e:
-            logger.error("Error in interactive proposal gen %d: %s", generation, e)
+            logger.error(
+                "Error in interactive proposal gen %d: %s", generation, e,
+                exc_info=True,
+            )
             return None
         finally:
             # Remove from active proposals regardless of outcome
