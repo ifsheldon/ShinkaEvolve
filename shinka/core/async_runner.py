@@ -518,6 +518,21 @@ class ShinkaEvolveRunner:
         try:
             bandit_path = Path(self.results_dir) / "bandit_state.pkl"
             if bandit_path.exists():
+                # Migrate legacy format: delete state files that lack
+                # arm_names, since they cannot be safely remapped when
+                # the model list changes.
+                import pickle
+                with open(bandit_path, "rb") as f:
+                    state = pickle.load(f)
+                if isinstance(state, dict) and "arm_names" not in state:
+                    logger.warning(
+                        "Legacy bandit state without arm_names at %s — "
+                        "deleting and starting fresh",
+                        bandit_path,
+                    )
+                    bandit_path.unlink()
+                    return
+
                 self.llm_selection.load_state(bandit_path)
                 logger.info(f"Loaded bandit state from {bandit_path}")
                 if hasattr(self.llm_selection, "print_summary"):
