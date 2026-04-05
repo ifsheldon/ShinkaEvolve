@@ -646,9 +646,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 action_type, generation, t_patch_elapsed, success,
             )
             if not success:
+                error_detail = meta_patch_data.get("error_attempt", "unknown")
                 logger.warning(
-                    "Interactive %s: patch not successful for gen %d",
-                    action_type, generation,
+                    "Interactive %s: patch not successful for gen %d: %s",
+                    action_type, generation, error_detail,
                 )
                 return None
 

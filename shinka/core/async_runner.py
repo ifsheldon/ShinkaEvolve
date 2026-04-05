@@ -3286,6 +3286,12 @@ class ShinkaEvolveRunner:
                     patch_path,
                 ) = result
 
+                if error_msg is not None or num_applied == 0:
+                    logger.warning(
+                        "Patch attempt %d failed: error=%s, num_applied=%d",
+                        patch_attempt + 1, error_msg, num_applied,
+                    )
+
                 if error_msg is None and num_applied > 0:
                     # Success - generate diff summary
                     diff_summary = {}
