@@ -178,6 +178,9 @@ class Program:
     embedding_pca_2d: List[float] = field(default_factory=list)
     embedding_pca_3d: List[float] = field(default_factory=list)
     embedding_cluster_id: Optional[int] = None
+    reasoning_embedding: List[float] = field(default_factory=list)
+    reasoning_embedding_pca_2d: List[float] = field(default_factory=list)
+    reasoning_embedding_cluster_id: Optional[int] = None
 
     # Migration history
     migration_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -190,6 +193,10 @@ class Program:
 
     # Meta-prompt evolution: track which system prompt generated this program
     system_prompt_id: Optional[str] = None
+
+    # Novelty detection results (populated by NoveltyDetector after evaluation)
+    novelty_level: str = "none"  # NoveltyLevel enum value: "none", "moderate", "high"
+    novelty_data: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
@@ -246,6 +253,19 @@ class Program:
             data["embedding_pca_3d"] = embedding_pca_3d_val
         else:
             data["embedding_pca_3d"] = []
+
+        # Ensure reasoning embedding fields
+        reasoning_embedding_val = data.get("reasoning_embedding")
+        if isinstance(reasoning_embedding_val, list):
+            data["reasoning_embedding"] = reasoning_embedding_val
+        else:
+            data["reasoning_embedding"] = []
+
+        reasoning_embedding_pca_2d_val = data.get("reasoning_embedding_pca_2d")
+        if isinstance(reasoning_embedding_pca_2d_val, list):
+            data["reasoning_embedding_pca_2d"] = reasoning_embedding_pca_2d_val
+        else:
+            data["reasoning_embedding_pca_2d"] = []
 
         # Ensure migration_history is a list
         migration_history_val = data.get("migration_history")
@@ -436,12 +456,17 @@ class ProgramDatabase:
                 embedding_pca_2d TEXT, -- JSON serialized List[float]
                 embedding_pca_3d TEXT, -- JSON serialized List[float]
                 embedding_cluster_id INTEGER,
+                reasoning_embedding TEXT,    -- JSON serialized List[float]
+                reasoning_embedding_pca_2d TEXT, -- JSON serialized List[float]
+                reasoning_embedding_cluster_id INTEGER,
                 correct BOOLEAN DEFAULT 0,  -- Correct (0=False, 1=True)
                 children_count INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,      -- JSON serialized Dict[str, Any]
                 migration_history TEXT, -- JSON of migration events
                 island_idx INTEGER,  -- Add island_idx to the schema
-                system_prompt_id TEXT  -- ID of system prompt that generated this program
+                system_prompt_id TEXT,  -- ID of system prompt that generated this program
+                novelty_level TEXT DEFAULT 'none',
+                novelty_data TEXT
             )
             """
         )
@@ -567,6 +592,66 @@ class ProgramDatabase:
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Error during compute_time timing migration: {e}")
+
+        # Migration 4: Add novelty_level column if it doesn't exist
+        try:
+            if "novelty_level" not in columns:
+                logger.info("Adding novelty_level column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN novelty_level TEXT DEFAULT 'none'"
+                )
+                self.conn.commit()
+                logger.info("Successfully added novelty_level column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_level migration: {e}")
+
+        # Migration 5: Add novelty_data column if it doesn't exist
+        try:
+            if "novelty_data" not in columns:
+                logger.info("Adding novelty_data column to programs table")
+                self.cursor.execute("ALTER TABLE programs ADD COLUMN novelty_data TEXT")
+                self.conn.commit()
+                logger.info("Successfully added novelty_data column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during novelty_data migration: {e}")
+
+        # Migration 6: Add reasoning_embedding column if it doesn't exist
+        try:
+            if "reasoning_embedding" not in columns:
+                logger.info("Adding reasoning_embedding column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN reasoning_embedding TEXT"
+                )
+                self.conn.commit()
+                logger.info("Successfully added reasoning_embedding column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during reasoning_embedding migration: {e}")
+
+        # Migration 7: Add reasoning_embedding_pca_2d column if it doesn't exist
+        try:
+            if "reasoning_embedding_pca_2d" not in columns:
+                logger.info("Adding reasoning_embedding_pca_2d column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN reasoning_embedding_pca_2d TEXT"
+                )
+                self.conn.commit()
+                logger.info("Successfully added reasoning_embedding_pca_2d column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during reasoning_embedding_pca_2d migration: {e}")
+
+        # Migration 8: Add reasoning_embedding_cluster_id column if it doesn't exist
+        try:
+            if "reasoning_embedding_cluster_id" not in columns:
+                logger.info(
+                    "Adding reasoning_embedding_cluster_id column to programs table"
+                )
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN reasoning_embedding_cluster_id INTEGER"
+                )
+                self.conn.commit()
+                logger.info("Successfully added reasoning_embedding_cluster_id column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during reasoning_embedding_cluster_id migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -774,6 +859,9 @@ class ProgramDatabase:
         embedding_json = json.dumps(program.embedding)  # Serialize embedding
         embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
         embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
+        reasoning_embedding_json = json.dumps(program.reasoning_embedding or [])
+        reasoning_pca_2d_json = json.dumps(program.reasoning_embedding_pca_2d or [])
+        novelty_data_json = json.dumps(program.novelty_data or {})
         migration_history_json = json.dumps(program.migration_history or [])
 
         # Handle text_feedback - convert to string if it's a list
@@ -798,11 +886,14 @@ class ProgramDatabase:
                     top_k_inspiration_ids, generation, timestamp, code_diff,
                     combined_score, public_metrics, private_metrics,
                     text_feedback, complexity, embedding, embedding_pca_2d,
-                    embedding_pca_3d, embedding_cluster_id, correct,
-                    children_count, metadata, island_idx, migration_history,
-                    system_prompt_id)
+                    embedding_pca_3d, embedding_cluster_id,
+                    reasoning_embedding, reasoning_embedding_pca_2d,
+                    reasoning_embedding_cluster_id,
+                    correct, children_count, metadata, island_idx,
+                    migration_history, system_prompt_id,
+                    novelty_level, novelty_data)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     program.id,
@@ -823,12 +914,17 @@ class ProgramDatabase:
                     embedding_pca_2d_json,
                     embedding_pca_3d_json,
                     program.embedding_cluster_id,
+                    reasoning_embedding_json,
+                    reasoning_pca_2d_json,
+                    program.reasoning_embedding_cluster_id,
                     program.correct,
                     program.children_count,
                     metadata_json,
                     program.island_idx,
                     migration_history_json,
                     program.system_prompt_id,
+                    program.novelty_level,
+                    novelty_data_json,
                 ),
             )
 
@@ -907,7 +1003,8 @@ class ProgramDatabase:
                 logger.info(
                     f"Creating copies of initial program {program.id} for all islands"
                 )
-                self.island_manager.copy_program_to_islands(program)
+                copy_ids = self.island_manager.copy_program_to_islands(program)
+                self.island_manager._last_copy_ids = copy_ids
                 if program.metadata:
                     program.metadata.pop("_needs_island_copies", None)
                     metadata_json = json.dumps(program.metadata)
@@ -1044,6 +1141,42 @@ class ProgramDatabase:
         else:
             program_data["embedding_pca_3d"] = []
 
+        # Handle reasoning embeddings
+        reasoning_embedding_text = program_data.get("reasoning_embedding")
+        if reasoning_embedding_text:
+            try:
+                program_data["reasoning_embedding"] = json.loads(
+                    reasoning_embedding_text
+                )
+            except json.JSONDecodeError:
+                program_data["reasoning_embedding"] = []
+        else:
+            program_data["reasoning_embedding"] = []
+
+        reasoning_pca_2d_text = program_data.get("reasoning_embedding_pca_2d")
+        if reasoning_pca_2d_text:
+            try:
+                program_data["reasoning_embedding_pca_2d"] = json.loads(
+                    reasoning_pca_2d_text
+                )
+            except json.JSONDecodeError:
+                program_data["reasoning_embedding_pca_2d"] = []
+        else:
+            program_data["reasoning_embedding_pca_2d"] = []
+
+        # Handle novelty data
+        novelty_data_text = program_data.get("novelty_data")
+        if novelty_data_text:
+            try:
+                program_data["novelty_data"] = json.loads(novelty_data_text)
+            except json.JSONDecodeError:
+                program_data["novelty_data"] = {}
+        else:
+            program_data["novelty_data"] = {}
+
+        if "novelty_level" not in program_data or program_data["novelty_level"] is None:
+            program_data["novelty_level"] = "none"
+
         # Handle migration_history
         migration_history_text = program_data.get("migration_history")
         if migration_history_text:
@@ -1071,6 +1204,24 @@ class ProgramDatabase:
         self.cursor.execute("SELECT * FROM programs WHERE id = ?", (program_id,))
         row = self.cursor.fetchone()
         return self._program_from_row(row)
+
+    def get_programs_by_ids(self, program_ids: List[str]) -> List[Program]:
+        """Resolve multiple program IDs into Program objects.
+
+        Args:
+            program_ids: Program IDs to resolve.
+
+        Returns:
+            List of Program objects in input order, skipping missing IDs.
+        """
+        if not program_ids:
+            return []
+        programs: List[Program] = []
+        for pid in program_ids:
+            p = self.get(pid)
+            if p is not None:
+                programs.append(p)
+        return programs
 
     @db_retry()
     def get_ancestry(self, program_id: str, max_ancestors: int = 10) -> List[Program]:
@@ -1232,6 +1383,33 @@ class ProgramDatabase:
         )
 
         return parent, archive_inspirations, top_k_inspirations
+
+    def sample_inspirations_for_parent(
+        self,
+        parent: Program,
+        num_archive_insp: int,
+        num_top_k_insp: int,
+    ) -> Tuple[List[Program], List[Program]]:
+        """Sample inspirations for a specific parent program.
+
+        Used by interactive actions (suggest/merge) where the parent is
+        chosen by the expert rather than by the sampling strategy.
+        """
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        context_selector = CombinedContextSelector(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            get_program_func=self.get,
+            best_program_id=self.best_program_id,
+            get_island_idx_func=(
+                self.island_manager.get_island_idx if self.island_manager else None
+            ),
+            program_from_row_func=self._program_from_row,
+        )
+        return context_selector.sample_context(parent, num_archive_insp, num_top_k_insp)
 
     @db_retry()
     def sample_with_fix_mode(
@@ -2525,6 +2703,80 @@ class ProgramDatabase:
         )
         return similarity_scores
 
+    def compute_reasoning_similarity_thread_safe(
+        self, vec: List[float], island_idx: int
+    ) -> List[float]:
+        """Thread-safe reasoning embedding similarity computation."""
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                self.config.db_path, check_same_thread=False, timeout=60.0
+            )
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT reasoning_embedding FROM programs "
+                "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
+                "AND reasoning_embedding != '[]'",
+                (island_idx,),
+            )
+            rows = cursor.fetchall()
+
+            if not rows:
+                return []
+
+            similarities = []
+            for row in rows:
+                db_embedding = json.loads(row["reasoning_embedding"])
+                if db_embedding:
+                    sim = self._cosine_similarity(vec, db_embedding)
+                    similarities.append(sim)
+            return similarities
+
+        except Exception as e:
+            logger.error(f"Thread-safe reasoning similarity computation failed: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+
+    @db_retry()
+    def compute_reasoning_similarity(
+        self, reasoning_embedding: List[float], island_idx: int
+    ) -> List[float]:
+        """Compute similarity between a reasoning embedding and all programs on an island."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        if not reasoning_embedding:
+            return []
+
+        self.cursor.execute(
+            "SELECT id, reasoning_embedding FROM programs "
+            "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
+            "AND reasoning_embedding != '[]'",
+            (island_idx,),
+        )
+        rows = self.cursor.fetchall()
+
+        if not rows:
+            return []
+
+        similarity_scores = []
+        for row in rows:
+            try:
+                embedding = json.loads(row["reasoning_embedding"])
+                if embedding:
+                    similarity = self._cosine_similarity(reasoning_embedding, embedding)
+                    similarity_scores.append(similarity)
+                else:
+                    similarity_scores.append(0.0)
+            except json.JSONDecodeError:
+                similarity_scores.append(0.0)
+
+        return similarity_scores
+
     @db_retry()
     def get_most_similar_program(
         self, code_embedding: List[float], island_idx: int
@@ -2741,6 +2993,64 @@ class ProgramDatabase:
         except Exception as e:
             self.conn.rollback()
             logger.error("Failed to update programs with new embedding features: %s", e)
+
+    def _recompute_reasoning_clusters(self, num_clusters, cursor, conn):
+        """Recompute PCA 2D and GMM clustering for reasoning embeddings."""
+        cursor.execute(
+            "SELECT id, reasoning_embedding FROM programs "
+            "WHERE reasoning_embedding IS NOT NULL AND reasoning_embedding != '[]'"
+        )
+        r_rows = cursor.fetchall()
+
+        if len(r_rows) < num_clusters:
+            return
+
+        r_program_ids = [row["id"] for row in r_rows]
+        r_embeddings = [json.loads(row["reasoning_embedding"]) for row in r_rows]
+        embedding_client = self._ensure_embedding_client()
+        if embedding_client is None:
+            return
+
+        try:
+            logger.info(
+                "Recomputing reasoning embedding PCA/clusters for %s programs.",
+                len(r_program_ids),
+            )
+            r_reduced_2d = embedding_client.get_dim_reduction(
+                r_embeddings, method="pca", dims=2
+            )
+            r_cluster_ids = embedding_client.get_embedding_clusters(
+                r_embeddings, num_clusters=num_clusters
+            )
+        except Exception as e:
+            logger.error(f"Failed to recompute reasoning embedding features: {e}")
+            return
+
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            for i, program_id in enumerate(r_program_ids):
+                r_pca_2d_json = json.dumps(r_reduced_2d[i].tolist())
+                r_cluster_id = int(r_cluster_ids[i])
+
+                cursor.execute(
+                    """
+                    UPDATE programs
+                    SET reasoning_embedding_pca_2d = ?,
+                        reasoning_embedding_cluster_id = ?
+                    WHERE id = ?
+                    """,
+                    (r_pca_2d_json, r_cluster_id, program_id),
+                )
+            conn.commit()
+            logger.info(
+                "Successfully updated reasoning embedding features for %s programs.",
+                len(r_program_ids),
+            )
+        except Exception as e:
+            conn.rollback()
+            logger.error(
+                "Failed to update reasoning embedding features: %s", e
+            )
 
     @db_retry()
     def _recompute_embeddings_and_clusters_thread_safe(self, num_clusters: int = 4):

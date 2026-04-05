@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Union, Sequence, List, Any, Dict
@@ -7,6 +8,8 @@ from rich.console import Console
 import rich.box
 import pickle
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 Arm = Union[int, str]
 Subset = Optional[Union[np.ndarray, Sequence[Arm]]]
@@ -169,6 +172,74 @@ class BanditBase(ABC):
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state of the bandit from serialization."""
         raise NotImplementedError
+
+    def _build_remap_indices(
+        self, saved_names: List[str]
+    ) -> Optional[np.ndarray]:
+        """Build index mapping from saved arm order to current arm order.
+
+        Returns an array where ``remap[new_idx]`` gives the old index for
+        each current arm, or ``-1`` if the arm is new (no saved data).
+        Returns ``None`` when no remapping is needed (same arms, same order).
+        """
+        if self._arm_names is None:
+            return None
+        if saved_names == self._arm_names:
+            return None
+        saved_lookup = {name: i for i, name in enumerate(saved_names)}
+        remap = np.full(self._n_arms, -1, dtype=np.int64)
+        for new_i, name in enumerate(self._arm_names):
+            if name in saved_lookup:
+                remap[new_i] = saved_lookup[name]
+        return remap
+
+    @staticmethod
+    def _remap_array(
+        old: np.ndarray, remap: np.ndarray, fill: float = 0.0
+    ) -> np.ndarray:
+        """Remap an old array to the new arm order using ``remap`` indices."""
+        new = np.full(len(remap), fill, dtype=old.dtype)
+        for new_i, old_i in enumerate(remap):
+            if old_i >= 0 and old_i < len(old):
+                new[new_i] = old[old_i]
+        return new
+
+    def _check_state_compat(
+        self, state: Dict[str, Any], sample_key: str = "n_submitted"
+    ) -> Optional[np.ndarray]:
+        """Check if saved state is compatible and return remap indices.
+
+        Returns ``None`` if no remapping needed, a remap array if arms
+        changed, or raises a log warning and returns ``"skip"`` sentinel
+        if the state cannot be used at all.
+        """
+        saved_names = state.get("arm_names")
+        if saved_names is not None and self._arm_names is not None:
+            remap = self._build_remap_indices(saved_names)
+            if remap is not None:
+                kept = int((remap >= 0).sum())
+                logger.info(
+                    "Bandit state remapped: %d/%d arms carried over, "
+                    "%d new, %d removed",
+                    kept,
+                    self._n_arms,
+                    int((remap == -1).sum()),
+                    len(saved_names) - kept,
+                )
+            return remap
+        # Legacy state without arm_names
+        if (
+            sample_key in state
+            and state[sample_key].shape[0] != self._n_arms
+        ):
+            logger.warning(
+                "Bandit state size mismatch (%d saved vs %d current) "
+                "and no arm names to remap — ignoring saved state",
+                state[sample_key].shape[0],
+                self._n_arms,
+            )
+            return "skip"  # type: ignore[return-value]
+        return None
 
     def save_state(self, path: Union[str, Path]) -> None:
         """Save bandit state to a pickle file."""
@@ -799,6 +870,7 @@ class AsymmetricUCB(BanditBase):
     def get_state(self) -> Dict[str, Any]:
         """Get the internal state for serialization."""
         return {
+            "arm_names": list(self._arm_names) if self._arm_names else None,
             "n_submitted": self.n_submitted.copy(),
             "n_completed": self.n_completed.copy(),
             "s": self.s.copy(),
@@ -811,16 +883,44 @@ class AsymmetricUCB(BanditBase):
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Restore the internal state from serialization."""
-        self.n_submitted = state["n_submitted"].copy()
-        self.n_completed = state["n_completed"].copy()
-        self.s = state["s"].copy()
-        self.divs = state["divs"].copy()
+        """Restore the internal state from serialization.
+
+        Handles arm list changes gracefully: if the saved state was created
+        with a different set of arms (e.g. models added or removed), the
+        statistics are remapped by arm name.  New arms start with zero
+        stats; removed arms are dropped.
+        """
+        remap = self._check_state_compat(state)
+        if remap is not None and isinstance(remap, str):
+            return  # skip — incompatible legacy state
+
+        if remap is not None:
+            s_fill = -np.inf if self.use_exponential_scaling else 0.0
+            self.n_submitted = self._remap_array(
+                state["n_submitted"], remap, fill=0.0
+            )
+            self.n_completed = self._remap_array(
+                state["n_completed"], remap, fill=0.0
+            )
+            self.s = self._remap_array(state["s"], remap, fill=s_fill)
+            self.divs = self._remap_array(state["divs"], remap, fill=0.0)
+            self.n_costs = self._remap_array(
+                state["n_costs"], remap, fill=0.0
+            )
+            self.total_costs = self._remap_array(
+                state["total_costs"], remap, fill=0.0
+            )
+        else:
+            self.n_submitted = state["n_submitted"].copy()
+            self.n_completed = state["n_completed"].copy()
+            self.s = state["s"].copy()
+            self.divs = state["divs"].copy()
+            self.n_costs = state["n_costs"].copy()
+            self.total_costs = state["total_costs"].copy()
+
         self._baseline = state["baseline"]
         self._obs_max = state["obs_max"]
         self._obs_min = state["obs_min"]
-        self.n_costs = state["n_costs"].copy()
-        self.total_costs = state["total_costs"].copy()
 
 
 class FixedSampler(BanditBase):
@@ -960,6 +1060,7 @@ class FixedSampler(BanditBase):
     def get_state(self) -> Dict[str, Any]:
         """Get the internal state for serialization."""
         return {
+            "arm_names": list(self._arm_names) if self._arm_names else None,
             "baseline": self._baseline,
             "p": self.p.copy(),
             "n_pulls": self.n_pulls.copy(),
@@ -969,14 +1070,39 @@ class FixedSampler(BanditBase):
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
+        remap = self._check_state_compat(state, sample_key="p")
+        if remap is not None and isinstance(remap, str):
+            return
+
         self._baseline = state["baseline"]
-        self.p = state["p"].copy()
-        if "n_pulls" in state:
-            self.n_pulls = state["n_pulls"].copy()
-        if "n_costs" in state:
-            self.n_costs = state["n_costs"].copy()
-        if "total_costs" in state:
-            self.total_costs = state["total_costs"].copy()
+        if remap is not None:
+            self.p = self._remap_array(state["p"], remap, fill=0.0)
+            # Re-normalize probabilities
+            s = self.p.sum()
+            if s > 0:
+                self.p /= s
+            else:
+                self.p = np.ones(self._n_arms) / self._n_arms
+            if "n_pulls" in state:
+                self.n_pulls = self._remap_array(
+                    state["n_pulls"], remap, fill=0.0
+                )
+            if "n_costs" in state:
+                self.n_costs = self._remap_array(
+                    state["n_costs"], remap, fill=0.0
+                )
+            if "total_costs" in state:
+                self.total_costs = self._remap_array(
+                    state["total_costs"], remap, fill=0.0
+                )
+        else:
+            self.p = state["p"].copy()
+            if "n_pulls" in state:
+                self.n_pulls = state["n_pulls"].copy()
+            if "n_costs" in state:
+                self.n_costs = state["n_costs"].copy()
+            if "total_costs" in state:
+                self.total_costs = state["total_costs"].copy()
 
 
 class ThompsonSampler(BanditBase):
@@ -1321,6 +1447,7 @@ class ThompsonSampler(BanditBase):
     def get_state(self) -> Dict[str, Any]:
         """Get the internal state for serialization."""
         return {
+            "arm_names": list(self._arm_names) if self._arm_names else None,
             "n_submitted": self.n_submitted.copy(),
             "n_completed": self.n_completed.copy(),
             "s": self.s.copy(),
@@ -1334,12 +1461,33 @@ class ThompsonSampler(BanditBase):
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
-        self.n_submitted = state["n_submitted"].copy()
-        self.n_completed = state["n_completed"].copy()
-        self.s = state["s"].copy()
-        self.divs = state["divs"].copy()
-        self.alpha = state["alpha"].copy()
-        self.beta = state["beta"].copy()
+        remap = self._check_state_compat(state)
+        if remap is not None and isinstance(remap, str):
+            return
+
+        if remap is not None:
+            self.n_submitted = self._remap_array(
+                state["n_submitted"], remap, fill=0.0
+            )
+            self.n_completed = self._remap_array(
+                state["n_completed"], remap, fill=0.0
+            )
+            self.s = self._remap_array(state["s"], remap, fill=0.0)
+            self.divs = self._remap_array(state["divs"], remap, fill=0.0)
+            self.alpha = self._remap_array(
+                state["alpha"], remap, fill=1.0
+            )
+            self.beta = self._remap_array(
+                state["beta"], remap, fill=1.0
+            )
+        else:
+            self.n_submitted = state["n_submitted"].copy()
+            self.n_completed = state["n_completed"].copy()
+            self.s = state["s"].copy()
+            self.divs = state["divs"].copy()
+            self.alpha = state["alpha"].copy()
+            self.beta = state["beta"].copy()
+
         self._baseline = state["baseline"]
         self._obs_max = state["obs_max"]
         self._obs_min = state["obs_min"]
