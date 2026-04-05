@@ -169,11 +169,12 @@ def _mock_query(
         # (first ```python...``` in the message), not from inspiration history.
         import re
 
-        # Extract the parent code block from the user message
-        code_block_match = re.search(
+        # Extract the parent code block — it's the LAST ```python block
+        # in the message (eval history comes first, parent code comes last).
+        code_blocks = re.findall(
             r"```(?:python)?\s*\n(.*?)```", msg, re.DOTALL
         )
-        parent_code_section = code_block_match.group(1) if code_block_match else msg
+        parent_code_section = code_blocks[-1] if code_blocks else msg
 
         # Find a line like "range(N)" in the parent code specifically
         range_match = re.search(r"range\((\d+)\)", parent_code_section)
