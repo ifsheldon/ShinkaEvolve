@@ -132,9 +132,9 @@ class AsyncRunningJob:
     exec_fname: str
     results_dir: str
     start_time: float
-    proposal_started_at: float
-    evaluation_submitted_at: float
     generation: int
+    proposal_started_at: float = 0.0
+    evaluation_submitted_at: float = 0.0
     evaluation_started_at: Optional[float] = None
     sampling_worker_id: Optional[int] = None
     evaluation_worker_id: Optional[int] = None
