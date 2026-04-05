@@ -13,7 +13,13 @@ def preprocess_args(argv: list[str]) -> list[str]:
             continue
 
         key, value = arg.split("=", 1)
-        if key in {"database", "evolution", "task", "cluster", "variant"} and not value.startswith("@"):
+        if key in {
+            "database",
+            "evolution",
+            "task",
+            "cluster",
+            "variant",
+        } and not value.startswith("@"):
             processed_args.append(f"{key}@_global_={value}")
             continue
 

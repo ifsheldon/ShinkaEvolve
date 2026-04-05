@@ -12,17 +12,13 @@ def _archive_members(archive_path: Path) -> list[str]:
     if archive_path.suffix == ".whl":
         with zipfile.ZipFile(archive_path) as archive:
             return sorted(
-                name
-                for name in archive.namelist()
-                if name and not name.endswith("/")
+                name for name in archive.namelist() if name and not name.endswith("/")
             )
 
     if archive_path.suffixes[-2:] == [".tar", ".gz"]:
         with tarfile.open(archive_path, "r:gz") as archive:
             return sorted(
-                member.name
-                for member in archive.getmembers()
-                if member.isfile()
+                member.name for member in archive.getmembers() if member.isfile()
             )
 
     raise ValueError(f"Unsupported archive format: {archive_path}")

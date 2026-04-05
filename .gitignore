@@ -194,3 +194,4 @@ cython_debug/
 # Local editor metadata
 .idea/
 .vscode/
+outputs

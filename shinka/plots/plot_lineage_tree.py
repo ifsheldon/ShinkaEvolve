@@ -155,7 +155,6 @@ def plot_lineage_tree(
                 levels[depth].append(node)
 
             # Create clean hierarchical positioning
-            max_depth = max(levels.keys()) if levels else 0
             # Total nodes in graph for base spacing
             total_nodes = len(G.nodes())
             for depth in sorted(levels.keys()):
@@ -569,7 +568,7 @@ def plot_lineage_tree(
             label="Best Score",
         )
         # Create line legend with appropriate width
-        path_line = Line2D([0], [0], color="red", linewidth=4, label=r"Path$\to$Best")
+        Line2D([0], [0], color="red", linewidth=4, label=r"Path$\to$Best")
         # Legend for patch types
         diff_patch = Line2D(
             [0],

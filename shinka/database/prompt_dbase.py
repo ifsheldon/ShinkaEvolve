@@ -1262,7 +1262,7 @@ class SystemPromptDatabase:
         archive = self.get_archive()
         best = self.get_best_prompt()
 
-        console.print(f"\n[bold]SystemPrompt Database Summary[/bold]")
+        console.print("\n[bold]SystemPrompt Database Summary[/bold]")
         console.print(f"Total prompts: {total}")
         console.print(f"Archive size: {len(archive)}/{self.config.archive_size}")
 

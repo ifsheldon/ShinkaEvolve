@@ -166,7 +166,10 @@ def _required_columns(df: pd.DataFrame) -> None:
 def _rank_programs(df: pd.DataFrame, config: InspectConfig) -> tuple[pd.DataFrame, str]:
     working = df.copy()
     if config.min_generation is not None and "generation" in working.columns:
-        working = working[pd.to_numeric(working["generation"], errors="coerce") >= config.min_generation]
+        working = working[
+            pd.to_numeric(working["generation"], errors="coerce")
+            >= config.min_generation
+        ]
 
     if working.empty:
         raise ValueError("No rows available after filtering.")
@@ -184,7 +187,9 @@ def _rank_programs(df: pd.DataFrame, config: InspectConfig) -> tuple[pd.DataFram
         mode = "top-k-all-fallback-no-correct"
         selected_pool = working
 
-    selected = selected_pool.sort_values("combined_score", ascending=False).head(config.k)
+    selected = selected_pool.sort_values("combined_score", ascending=False).head(
+        config.k
+    )
     if selected.empty:
         raise ValueError("Selection returned zero rows.")
     return selected, mode
@@ -258,7 +263,9 @@ def _render_markdown(
         lines.append(f"### Rank {rank} - Program `{program_id}`")
         lines.append(f"- Generation: `{generation}`")
         lines.append(f"- Combined score: `{float(score):.6f}`")
-        lines.append(f"- Correct: `{'true' if _to_bool(row.get('correct')) else 'false'}`")
+        lines.append(
+            f"- Correct: `{'true' if _to_bool(row.get('correct')) else 'false'}`"
+        )
         lines.append(f"- Parent: `{parent_id}`")
         lines.append(f"- Language: `{language}`")
         if was_truncated:
