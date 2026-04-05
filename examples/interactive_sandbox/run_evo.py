@@ -165,11 +165,18 @@ def _mock_query(
 
     if is_diff:
         # Diff patch: produce a SEARCH/REPLACE block that changes a constant
-        # in the parent code. Extract a recognisable line from the user message.
+        # in the parent code. Extract from the "Current program" code block
+        # (first ```python...``` in the message), not from inspiration history.
         import re
 
-        # Find a line like "range(N)" in the parent code
-        range_match = re.search(r"range\((\d+)\)", msg)
+        # Extract the parent code block from the user message
+        code_block_match = re.search(
+            r"```(?:python)?\s*\n(.*?)```", msg, re.DOTALL
+        )
+        parent_code_section = code_block_match.group(1) if code_block_match else msg
+
+        # Find a line like "range(N)" in the parent code specifically
+        range_match = re.search(r"range\((\d+)\)", parent_code_section)
         if range_match:
             old_val = range_match.group(1)
             search_line = f"range({old_val})"
