@@ -9,7 +9,7 @@ from .providers.model_resolver import resolve_model_backend
 
 load_shinka_dotenv()
 
-TIMEOUT = 600
+TIMEOUT = 900
 
 
 def _build_azure_endpoint() -> str:
