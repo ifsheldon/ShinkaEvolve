@@ -92,6 +92,8 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     assert evo_config.task_sys_msg is not None
     assert evo_config.patch_types == ["diff", "full", "cross"]
     assert evo_config.patch_type_probs == [0.6, 0.3, 0.1]
+    assert evo_config.max_proposal_jobs == 1
+    assert evo_config.max_db_workers == 4
     assert evo_config.max_patch_attempts == 1
     assert evo_config.llm_models == [
         "gpt-5-mini",
@@ -109,14 +111,12 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     assert evo_config.embedding_model == "text-embedding-3-small"
     assert evo_config.code_embed_sim_threshold == pytest.approx(0.99)
     assert db_config.num_islands == 2
-    assert db_config.archive_size == 40
+    assert db_config.archive_size == 100
     assert db_config.num_archive_inspirations == 1
     assert db_config.num_top_k_inspirations == 1
     assert db_config.migration_rate == pytest.approx(0.0)
     assert db_config.parent_selection_strategy == "weighted"
     assert job_config.time == "00:03:00"
-    assert not hasattr(evo_config, "max_proposal_jobs")
-    assert not hasattr(evo_config, "max_db_workers")
     assert "def run" in init_program_str
     assert "def main" in evaluate_str
 
@@ -423,8 +423,8 @@ def test_dataclass_defaults_match_shared_baseline():
     assert evo_config.embedding_model == "text-embedding-3-small"
     assert evo_config.code_embed_sim_threshold == pytest.approx(0.99)
 
-    assert db_config.num_islands == 2
-    assert db_config.archive_size == 40
+    assert db_config.num_islands == 4
+    assert db_config.archive_size == 100
     assert db_config.num_archive_inspirations == 1
     assert db_config.num_top_k_inspirations == 1
     assert db_config.migration_interval == 10

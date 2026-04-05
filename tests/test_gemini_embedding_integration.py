@@ -29,9 +29,7 @@ class _FakeGoogleModels:
 
     def embed_content(self, *, model, contents, config=None):
         self.calls.append(("embed_content", model, contents))
-        return SimpleNamespace(
-            embeddings=[SimpleNamespace(values=[0.1, 0.2, 0.3])]
-        )
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1, 0.2, 0.3])])
 
 
 class _FakeGoogleClient:
@@ -105,7 +103,9 @@ def test_async_google_embedding_uses_token_count_for_cost(monkeypatch):
 
 
 def test_sync_google_embedding_falls_back_when_token_count_fails(monkeypatch):
-    fake_models = _FakeGoogleModels(total_tokens=99, count_tokens_exc=RuntimeError("boom"))
+    fake_models = _FakeGoogleModels(
+        total_tokens=99, count_tokens_exc=RuntimeError("boom")
+    )
     fake_client = _FakeGoogleClient(fake_models)
 
     monkeypatch.setattr(
