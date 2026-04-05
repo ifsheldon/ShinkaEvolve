@@ -44,7 +44,66 @@ from shinka.llm.providers.result import QueryResult
 
 # ── Mock LLM ────────────────────────────────────────────────────────────────
 
+MAX_TOKENS = 2048
 _CALL_COUNTER = 0
+_META_COUNTER = 0
+
+
+def _is_meta_call(system_msg: str) -> bool:
+    """Detect whether this LLM call is a meta-summarization step."""
+    meta_markers = [
+        "analyzing an individual program",  # Step 1
+        "global insights",                  # Step 2
+        "actionable recommendations",       # Step 3
+    ]
+    lower = system_msg.lower()
+    return any(m in lower for m in meta_markers)
+
+
+def _mock_meta_response(system_msg: str, msg: str) -> str:
+    """Return a plausible mock response for meta-summarization calls."""
+    global _META_COUNTER
+    _META_COUNTER += 1
+
+    lower_sys = system_msg.lower()
+
+    if "analyzing an individual program" in lower_sys:
+        # Step 1: Individual program summary
+        return (
+            f"**Summary:** This program variant #{_META_COUNTER} modifies loop "
+            f"parameters and multiplier constants. The approach explores numeric "
+            f"ranges to maximise the returned value.\n"
+            f"**Strengths:** Simple and deterministic.\n"
+            f"**Weaknesses:** Limited diversity in strategies."
+        )
+
+    if "global insights" in lower_sys:
+        # Step 2: Global insights scratchpad
+        return (
+            "## Key Observations\n\n"
+            "1. Most successful programs use higher loop counts combined "
+            "with moderate multipliers.\n"
+            "2. Programs that time out tend to include unnecessary sleeps.\n"
+            "3. The search space is narrow — all variants follow the same "
+            "sum-of-gaussians template.\n\n"
+            "## Promising Directions\n\n"
+            "- Explore alternative distributions (uniform, exponential).\n"
+            "- Increase the seed diversity to avoid local optima.\n"
+            "- Consider caching intermediate results for efficiency."
+        )
+
+    if "actionable recommendations" in lower_sys:
+        # Step 3: Recommendations
+        return (
+            "1. Increase the loop count beyond 50 to explore larger sums.\n"
+            "2. Try replacing gauss(0,1) with a heavier-tailed distribution.\n"
+            "3. Use multiple seeds and return the maximum across runs.\n"
+            "4. Avoid adding sleep() calls that risk timeout.\n"
+            "5. Consider a two-stage approach: coarse search then refinement."
+        )
+
+    # Fallback — shouldn't happen
+    return f"Mock meta response #{_META_COUNTER} for an unrecognised meta step."
 
 
 def _mock_query(
@@ -61,6 +120,7 @@ def _mock_query(
 
     * Prints the full system + user prompt so you can inspect them.
     * Returns a trivially modified Python program (changes a constant).
+    * For meta-summarization calls, returns appropriate section content.
     * Cost is always $0.
     """
     global _CALL_COUNTER
@@ -75,6 +135,24 @@ def _mock_query(
     )
     print(f"\n[USER MESSAGE]\n{textwrap.shorten(msg, width=1200, placeholder=' ...')}")
     print(sep)
+
+    # Meta-summarization calls get their own response format
+    if _is_meta_call(system_msg):
+        content = _mock_meta_response(system_msg, msg)
+        print(f"[MOCK META RESPONSE]  ({len(content)} chars)")
+        print()
+        return QueryResult(
+            content=content,
+            msg=msg,
+            system_msg=system_msg,
+            new_msg_history=[],
+            model_name="mock-llm",
+            kwargs=llm_kwargs or {},
+            input_tokens=len(msg) // 4,
+            output_tokens=len(content) // 4,
+            cost=0.0,
+            model_posteriors={"mock-llm": 1.0},
+        )
 
     # Produce a simple "full" replacement program.
     # We randomise one constant so each generation is slightly different.
@@ -294,6 +372,12 @@ def _create_evo_config() -> EvolutionConfig:
             temperatures=[0.7],
             max_tokens=2048,
         ),
+        # Meta-summarization: runs every 10 programs, produces 3-section output
+        meta_rec_interval=10,
+        meta_llm_models=["mock-llm"],
+        meta_llm_kwargs={"max_tokens": MAX_TOKENS},
+        meta_max_recommendations=5,
+        sample_single_meta_rec=True,
         embedding_model="mock-embedding",  # use mocked embedding
         code_embed_sim_threshold=0.95,  # enable novelty rejection
         reasoning_embed_sim_threshold=0.95,  # reasoning embedding threshold
