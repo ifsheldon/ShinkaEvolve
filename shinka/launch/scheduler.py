@@ -141,7 +141,13 @@ class JobScheduler:
             ]
         if self.config.extra_cmd_args:
             for k, v in self.config.extra_cmd_args.items():
-                python_cmd.extend([f"--{k}", str(v)])
+                # Handle boolean flags
+                if isinstance(v, bool):
+                    if v:  # Only append flag if True
+                        python_cmd.append(f"--{k}")
+                else:
+                    # For non-boolean values, append both flag and value
+                    python_cmd.extend([f"--{k}", str(v)])
 
         if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
             if _has_value(self.config.conda_env):
@@ -153,7 +159,9 @@ class JobScheduler:
                     *python_cmd,
                 ]
             if _has_value(self.config.activate_script):
-                activate_script = self.config.activate_script.strip().replace('"', '\\"')
+                activate_script = self.config.activate_script.strip().replace(
+                    '"', '\\"'
+                )
                 return [
                     "bash",
                     "-lc",
@@ -284,6 +292,11 @@ class JobScheduler:
                                 f"=> Gen. {job.generation}"
                             )
                         job.job_id.kill()
+                        # Write timeout marker before load_results is called
+                        from shinka.utils import write_timeout_marker
+
+                        if hasattr(job, "results_dir"):
+                            write_timeout_marker(job.results_dir, timeout)
                         return False
 
                 # More robust status checking with exception handling
