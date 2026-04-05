@@ -1,0 +1,5 @@
+# Task specific configuration for MOP Drone
+task_sys_msg: "You are an expert algorithm engineer. Your task is to modify the solve_mop function to minimize three objectives simultaneously: flying distance (F1), school noise proximity (F2), and base station signal drop (F3). The framework returns a combined score where lower output is better. Return an array of Y-coordinates that creates a smooth line bending away from (40, 20) and towards (70, -30)."
+init_program_path: "initial.py"
+job_type: "local"
+language: "python"
