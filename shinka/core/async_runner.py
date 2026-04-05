@@ -11,6 +11,7 @@ import time
 import uuid
 import os
 import math
+import yaml
 import psutil
 import threading
 from datetime import datetime
@@ -37,10 +38,11 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.embed import AsyncEmbeddingClient
-from shinka.launch import JobScheduler, JobConfig
+from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
+    get_reasoning_embedding_async,
     write_file_async,
 )
 from shinka.edit import summarize_diff
@@ -50,6 +52,7 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
+from shinka.core.novelty_detector import NoveltyDetector, NoveltyLevel
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
     with_pipeline_timing,
@@ -143,6 +146,7 @@ class AsyncRunningJob:
     code_diff: Optional[str] = None
     meta_patch_data: Dict[str, Any] = field(default_factory=dict)
     code_embedding: Optional[List[float]] = None
+    reasoning_embedding: Optional[List[float]] = None
     embed_cost: float = 0.0
     novelty_cost: float = 0.0  # Track novelty checking cost
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
@@ -151,6 +155,7 @@ class AsyncRunningJob:
     completion_detected_at: Optional[float] = None
     discard_if_completed: bool = False
     evaluation_slot_released: bool = False
+    program_id: str = ""  # Pre-generated UUID, set at queue time for callback matching
 
 
 @dataclass
@@ -242,6 +247,8 @@ class ShinkaEvolveRunner:
                 ],
                 force=True,  # Override any existing logging config
             )
+            # Suppress noisy third-party loggers
+            logging.getLogger("httpx").setLevel(logging.WARNING)
         else:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
@@ -264,6 +271,9 @@ class ShinkaEvolveRunner:
             self.job_config.eval_program_path = str(evaluate_path)
             if self.verbose:
                 logger.info(f"Saved evaluate_str to {evaluate_path}")
+
+        # Save experiment configuration to YAML for the UI to read
+        self._save_experiment_config()
 
         # Validate and adjust concurrency settings based on available CPU cores
         cpu_count = os.cpu_count() or 4  # Default to 4 if can't detect
@@ -351,9 +361,23 @@ class ShinkaEvolveRunner:
         else:
             self.embedding_client = None
 
+        # Propagate eval_timeout to LocalJobConfig.time if set
+        if evo_config.eval_timeout and isinstance(job_config, LocalJobConfig):
+            h, remainder = divmod(evo_config.eval_timeout, 3600)
+            m, s = divmod(remainder, 60)
+            job_config.time = f"{h:02d}:{m:02d}:{s:02d}"
+
         # Job scheduler
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type, config=job_config, verbose=verbose
+        )
+
+        # Event notifier for push-based frontend updates
+        from shinka.core.event_notifier import EventNotifier
+
+        self.event_notifier = EventNotifier(
+            callback_url=evo_config.callback_url,
+            db_path=str(db_config.db_path),
         )
 
         # Prompt sampler
@@ -400,6 +424,8 @@ class ShinkaEvolveRunner:
                 language=evo_config.language,
                 similarity_threshold=evo_config.code_embed_sim_threshold,
                 max_novelty_attempts=evo_config.max_novelty_attempts,
+                reasoning_similarity_threshold=evo_config.reasoning_embed_sim_threshold,
+                use_reasoning_novelty=evo_config.use_reasoning_novelty,
             )
             self.novelty_judge = AsyncNoveltyJudge(
                 sync_novelty_judge,
@@ -407,6 +433,12 @@ class ShinkaEvolveRunner:
             )
         else:
             self.novelty_judge = None
+
+        # Initialize NoveltyDetector for post-evaluation novelty classification
+        self.novelty_detector = NoveltyDetector(
+            novelty_function_path=evo_config.novelty_function_path,
+            results_dir=str(self.results_dir),
+        )
 
         # Meta-prompt evolution components
         # These will be initialized in _setup_async after results_dir is set
@@ -501,6 +533,25 @@ class ShinkaEvolveRunner:
         self._last_meta_log_state: dict | None = None
         self._last_meta_log_info_time: float | None = None
 
+    def _save_experiment_config(self) -> None:
+        """Save experiment configuration to YAML so the UI can read it."""
+        from dataclasses import asdict
+
+        config_data = {
+            "evolution_config": asdict(self.evo_config),
+            "job_config": asdict(self.job_config),
+            "database_config": asdict(self.db_config),
+            "timestamp": datetime.now().isoformat(),
+            "results_directory": str(self.results_dir),
+        }
+        config_path = Path(self.results_dir) / "experiment_config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with config_path.open("w", encoding="utf-8") as f:
+                yaml.dump(config_data, f, default_flow_style=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save experiment_config.yaml: {e}")
+
     def _save_bandit_state(self) -> None:
         """Save the LLM selection bandit state to disk."""
         if self.llm_selection is None:
@@ -519,6 +570,21 @@ class ShinkaEvolveRunner:
         try:
             bandit_path = Path(self.results_dir) / "bandit_state.pkl"
             if bandit_path.exists():
+                # Migrate legacy format: delete state files that lack
+                # arm_names, since they cannot be safely remapped when
+                # the model list changes.
+                import pickle
+                with open(bandit_path, "rb") as f:
+                    state = pickle.load(f)
+                if isinstance(state, dict) and "arm_names" not in state:
+                    logger.warning(
+                        "Legacy bandit state without arm_names at %s — "
+                        "deleting and starting fresh",
+                        bandit_path,
+                    )
+                    bandit_path.unlink()
+                    return
+
                 self.llm_selection.load_state(bandit_path)
                 logger.info(f"Loaded bandit state from {bandit_path}")
                 if hasattr(self.llm_selection, "print_summary"):
@@ -1011,6 +1077,7 @@ class ShinkaEvolveRunner:
 
         # Update database config with results directory path
         self.db_config.db_path = str(db_path)
+        self.event_notifier.db_path = str(db_path)
 
         # Reinitialize database with updated path
         self.db = ProgramDatabase(
@@ -1030,6 +1097,7 @@ class ShinkaEvolveRunner:
 
         # Check if we're resuming from an existing database
         resuming_run = db_path.exists() and self.db.last_iteration > 0
+        self._is_resuming = resuming_run
 
         # Load bandit state if resuming
         if resuming_run:
@@ -1380,6 +1448,15 @@ class ShinkaEvolveRunner:
             if self.verbose and code_embedding:
                 logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
 
+            # Compute reasoning embedding only for LLM-generated initial programs
+            # (file-based seed programs have no LLM reasoning to embed)
+            reasoning_embedding = None
+            if llm_metadata:
+                reasoning_embedding, re_cost = (
+                    await self._get_reasoning_embedding_async(llm_metadata)
+                )
+                e_cost += re_cost
+
             # Extract metrics properly like the sync version
             correct_val = results.get("correct", {}).get("correct", False)
             metrics_val = results.get("metrics", {})
@@ -1440,6 +1517,7 @@ class ShinkaEvolveRunner:
                 text_feedback=text_feedback,
                 timestamp=datetime.now().timestamp(),
                 embedding=code_embedding,
+                reasoning_embedding=reasoning_embedding or [],
                 metadata=base_metadata,
             )
 
@@ -1466,6 +1544,16 @@ class ShinkaEvolveRunner:
                 )
             except Exception:
                 code_embedding, e_cost = None, 0.0
+
+            reasoning_embedding = None
+            if llm_metadata:
+                try:
+                    reasoning_embedding, re_cost = (
+                        await self._get_reasoning_embedding_async(llm_metadata)
+                    )
+                    e_cost += re_cost
+                except Exception:
+                    pass
 
             # Build base metadata for fallback
             base_metadata = {
@@ -1515,11 +1603,18 @@ class ShinkaEvolveRunner:
                 correct=True,
                 timestamp=datetime.now().timestamp(),
                 embedding=code_embedding,
+                reasoning_embedding=reasoning_embedding or [],
                 metadata=base_metadata,
             )
 
         # Add to database
-        await self.async_db.add_program_async(initial_program, verbose=self.verbose)
+        island_copies = await self.async_db.add_program_async(initial_program, verbose=self.verbose)
+
+        # Notify frontend about the initial program and any island copies
+        await self.event_notifier.notify_generated(initial_program)
+        if island_copies:
+            for copy in island_copies:
+                await self.event_notifier.notify_generated(copy)
 
         # Add initial program costs to in-memory total for accurate budget tracking
         initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
@@ -2507,6 +2602,11 @@ class ShinkaEvolveRunner:
                     f"Code embedding completed for generation {generation} (cost: ${e_cost:.4f})"
                 )
 
+            reasoning_embedding, re_cost = await self._get_reasoning_embedding_async(
+                meta_patch_data
+            )
+            embed_cost += re_cost
+
             if not code_embedding:
                 if self.novelty_judge:
                     self.novelty_judge.log_novelty_skip_message("no embedding")
@@ -2524,7 +2624,8 @@ class ShinkaEvolveRunner:
                         should_accept,
                         novelty_metadata,
                     ) = await self.novelty_judge.assess_novelty_with_rejection_sampling_async(
-                        exec_fname, code_embedding, parent_program, self.db
+                        exec_fname, code_embedding, parent_program, self.db,
+                        reasoning_embedding=reasoning_embedding,
                     )
 
                     # Update costs and metadata from novelty assessment (same as sync runner)
@@ -2615,6 +2716,7 @@ class ShinkaEvolveRunner:
                     code_diff=code_diff,
                     meta_patch_data=meta_patch_data,
                     code_embedding=code_embedding,
+                    reasoning_embedding=reasoning_embedding,
                     embed_cost=embed_cost,
                     novelty_cost=novelty_total_cost,  # Store novelty cost in running job
                     proposal_task_id=task_id,
@@ -2629,8 +2731,23 @@ class ShinkaEvolveRunner:
                 self._update_avg_proposal_cost(proposal_total_cost)
 
                 # Track job in both running list and submitted registry
+                running_job.program_id = str(uuid.uuid4())
                 self.running_jobs.append(running_job)
                 self.submitted_jobs[str(job_id)] = running_job
+
+                # Notify frontend that a program is queued for evaluation
+                code_content = await self._read_file_async(exec_fname) or ""
+                await self.event_notifier.notify_queued(
+                    program_id=running_job.program_id,
+                    parent_id=parent_program.id,
+                    generation=generation,
+                    code=code_content,
+                    code_diff=code_diff,
+                    island_idx=parent_program.island_idx,
+                    metadata=meta_patch_data,
+                    archive_inspiration_ids=running_job.archive_insp_ids,
+                    top_k_inspiration_ids=running_job.top_k_insp_ids,
+                )
 
                 # Trigger immediate job status check to catch fast-completing jobs
                 self.slot_available.set()
@@ -2997,6 +3114,35 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in fix patch async: {e}")
             return None, {"api_costs": 0.0, "error_attempt": str(e)}, False
 
+    async def _get_reasoning_embedding_async(
+        self, metadata: dict
+    ) -> Tuple[Optional[List[float]], float]:
+        """Get reasoning embedding asynchronously from metadata."""
+        if not self.embedding_client:
+            return None, 0.0
+
+        return await get_reasoning_embedding_async(metadata, self.embedding_client)
+
+    def _update_novelty_in_db(
+        self, program_id: str, novelty_level: str, display_data: Optional[Dict]
+    ) -> None:
+        """Update novelty fields in the database (runs in executor thread)."""
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(self.db.config.db_path), timeout=30.0)
+        try:
+            conn.execute(
+                "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
+                (
+                    novelty_level,
+                    json.dumps(display_data or {}),
+                    program_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     async def _run_patch_async(
         self,
         parent_program: Program,
@@ -3008,8 +3154,20 @@ class ShinkaEvolveRunner:
         resample_attempt: int = 1,
         model_sample_probs: Optional[List[float]] = None,
         model_posterior: Optional[List[float]] = None,
+        patch_type_override: Optional[str] = None,
+        user_suggestions: Optional[str] = None,
     ) -> Optional[Tuple[Optional[str], Dict[str, Any], bool]]:
-        """Run async patch generation."""
+        """Run async patch generation.
+
+        Parameters
+        ----------
+        patch_type_override : str, optional
+            Force a specific patch type (e.g. ``"full"``, ``"cross"``)
+            instead of sampling from the configured distribution.
+        user_suggestions : str, optional
+            Expert suggestion text appended to the user message so
+            the LLM sees it regardless of patch type.
+        """
         # Initialize prompt-related variables outside try block for exception handling
         current_prompt_id: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
@@ -3028,6 +3186,8 @@ class ShinkaEvolveRunner:
                 archive_inspirations=archive_programs,
                 top_k_inspirations=top_k_programs,
                 meta_recommendations=meta_recs,
+                patch_type_override=patch_type_override,
+                user_suggestions=user_suggestions,
             )
 
             # Restore original task_sys_msg
@@ -3548,9 +3708,11 @@ class ShinkaEvolveRunner:
             postprocess_started_at = time.time()
 
             # Always create a program entry, even if results are missing
+            error_type = None
             if results:
                 # Extract metrics properly like the sync version
                 correct_val = results.get("correct", {}).get("correct", False)
+                error_type = results.get("correct", {}).get("error_type")
                 metrics_val = results.get("metrics", {})
                 combined_score = metrics_val.get("combined_score", 0.0)
                 public_metrics = metrics_val.get("public", {})
@@ -3569,6 +3731,7 @@ class ShinkaEvolveRunner:
                     f"Creating program entry with default values to avoid job loss."
                 )
                 correct_val = False
+                error_type = "crash"
                 combined_score = 0.0
                 public_metrics = {}
                 private_metrics = {}
@@ -3581,12 +3744,37 @@ class ShinkaEvolveRunner:
             if job.meta_patch_data:
                 system_prompt_id = job.meta_patch_data.get("system_prompt_id")
 
+            # Build program_metadata dict
+            program_metadata = {
+                **(job.meta_patch_data or {}),
+                "embed_cost": job.embed_cost,
+                "novelty_cost": job.novelty_cost,
+                "stdout_log": stdout_log,
+                "stderr_log": stderr_log,
+                "results_missing": results is None,
+                "safe_processing": True,
+                "source_job_id": source_job_id,
+                "source_generation": job.generation,
+                "timeline_lane_mode": "pool_slots",
+                "sampling_worker_id": job.sampling_worker_id,
+                "evaluation_worker_id": job.evaluation_worker_id,
+                "postprocess_worker_id": postprocess_worker_id,
+                "active_proposals_at_start": job.active_proposals_at_start,
+                "running_eval_jobs_at_submit": job.running_eval_jobs_at_submit,
+                "db_workers_in_use_at_postprocess_start": db_workers_in_use_at_postprocess_start,
+                "sampling_worker_capacity": self.max_proposal_jobs,
+                "evaluation_worker_capacity": self.max_evaluation_jobs,
+                "postprocess_worker_capacity": self.max_db_workers,
+            }
+            if error_type:
+                program_metadata["error_type"] = error_type
+
             # Create program from results (or defaults if results missing)
             evaluation_started_at = (
                 job.evaluation_started_at or job.evaluation_submitted_at
             )
             program = Program(
-                id=str(uuid.uuid4()),
+                id=job.program_id or str(uuid.uuid4()),
                 code=await self._read_file_async(job.exec_fname) or "",
                 generation=job.generation,
                 correct=correct_val,
@@ -3600,29 +3788,10 @@ class ShinkaEvolveRunner:
                 top_k_inspiration_ids=job.top_k_insp_ids,
                 code_diff=job.code_diff,
                 embedding=job.code_embedding or [],
+                reasoning_embedding=job.reasoning_embedding or [],
                 system_prompt_id=system_prompt_id,  # Track evolved prompt
                 metadata=with_pipeline_timing(
-                    {
-                        **(job.meta_patch_data or {}),
-                        "embed_cost": job.embed_cost,
-                        "novelty_cost": job.novelty_cost,
-                        "stdout_log": stdout_log,
-                        "stderr_log": stderr_log,
-                        "results_missing": results is None,
-                        "safe_processing": True,
-                        "source_job_id": source_job_id,
-                        "source_generation": job.generation,
-                        "timeline_lane_mode": "pool_slots",
-                        "sampling_worker_id": job.sampling_worker_id,
-                        "evaluation_worker_id": job.evaluation_worker_id,
-                        "postprocess_worker_id": postprocess_worker_id,
-                        "active_proposals_at_start": job.active_proposals_at_start,
-                        "running_eval_jobs_at_submit": job.running_eval_jobs_at_submit,
-                        "db_workers_in_use_at_postprocess_start": db_workers_in_use_at_postprocess_start,
-                        "sampling_worker_capacity": self.max_proposal_jobs,
-                        "evaluation_worker_capacity": self.max_evaluation_jobs,
-                        "postprocess_worker_capacity": self.max_db_workers,
-                    },
+                    program_metadata,
                     pipeline_started_at=job.proposal_started_at,
                     sampling_started_at=job.proposal_started_at,
                     sampling_finished_at=evaluation_started_at,
@@ -3648,6 +3817,7 @@ class ShinkaEvolveRunner:
                         code_diff=job.code_diff,
                         meta_patch_data=job.meta_patch_data,
                         code_embedding=job.code_embedding,
+                        reasoning_embedding=job.reasoning_embedding,
                         embed_cost=job.embed_cost,
                         verbose=self.verbose,
                         defer_maintenance=True,
@@ -3657,6 +3827,50 @@ class ShinkaEvolveRunner:
                 logger.info(
                     f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
                 )
+
+                # Notify frontend that the program has been generated
+                await self.event_notifier.notify_generated(program)
+
+                # --- Post-evaluation novelty detection ---
+                try:
+                    parent_prog_for_novelty = None
+                    if job.parent_id:
+                        parent_prog_for_novelty = await self.async_db.get_async(
+                            job.parent_id
+                        )
+
+                    inspiration_programs = []
+                    for insp_id in (job.archive_insp_ids or []) + (
+                        job.top_k_insp_ids or []
+                    ):
+                        insp = await self.async_db.get_async(insp_id)
+                        if insp:
+                            inspiration_programs.append(insp)
+
+                    novelty_result = self.novelty_detector.detect(
+                        program=program,
+                        parent=parent_prog_for_novelty,
+                        inspirations=inspiration_programs,
+                    )
+
+                    if novelty_result.level != NoveltyLevel.NONE:
+                        program.novelty_level = novelty_result.level.value
+                        program.novelty_data = novelty_result.display_data or {}
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None,
+                            self._update_novelty_in_db,
+                            program.id,
+                            novelty_result.level.value,
+                            novelty_result.display_data,
+                        )
+                        logger.info(
+                            f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
+                            f"Program {program.id} (gen {program.generation}, "
+                            f"score {program.combined_score})"
+                        )
+                except Exception as e:
+                    logger.warning(f"Novelty detection failed for {program.id}: {e}")
 
             except asyncio.TimeoutError:
                 self._queue_failed_db_job(

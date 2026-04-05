@@ -300,3 +300,72 @@ async def get_code_embedding_async(
     except Exception as e:
         logger.error(f"Error generating code embedding for {exec_fname}: {e}")
         return None, 0.0
+
+
+def extract_reasoning_text(metadata: dict) -> Optional[str]:
+    """Extract reasoning text from program metadata for embedding.
+
+    Combines patch_description and LLM thought into a single string.
+    Returns None if no meaningful text is found.
+    """
+    patch_description = metadata.get("patch_description")
+    llm_result = metadata.get("llm_result")
+    thought = None
+    if isinstance(llm_result, dict):
+        thought = llm_result.get("thought")
+
+    # Ensure we have string values
+    if isinstance(patch_description, str) and patch_description.strip():
+        desc = patch_description.strip()
+    else:
+        desc = None
+
+    if isinstance(thought, str) and thought.strip():
+        tht = thought.strip()
+    else:
+        tht = None
+
+    if not desc and not tht:
+        return None
+
+    if desc and tht:
+        return f"{desc}\n\n{tht}"
+    return desc or tht
+
+
+async def get_reasoning_embedding_async(
+    metadata: dict, embedding_client, max_chars: int = 10000
+) -> Tuple[Optional[list], float]:
+    """Async reasoning embedding generation from program metadata.
+
+    Args:
+        metadata: Program metadata dict containing patch_description and llm_result
+        embedding_client: Embedding client instance
+        max_chars: Maximum characters to embed
+
+    Returns:
+        Tuple of (embedding_vector, cost)
+    """
+    try:
+        text = extract_reasoning_text(metadata)
+        if not text:
+            return None, 0.0
+
+        # Truncate if too long
+        if len(text) > max_chars:
+            text = text[:max_chars]
+
+        loop = asyncio.get_event_loop()
+
+        if hasattr(embedding_client, "embed_async"):
+            embedding, cost = await embedding_client.embed_async(text)
+        else:
+            embedding, cost = await loop.run_in_executor(
+                None, embedding_client.get_embedding, text
+            )
+
+        return embedding, cost
+
+    except Exception as e:
+        logger.error(f"Error generating reasoning embedding: {e}")
+        return None, 0.0
