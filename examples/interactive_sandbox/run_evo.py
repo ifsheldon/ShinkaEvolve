@@ -154,40 +154,68 @@ def _mock_query(
             model_posteriors={"mock-llm": 1.0},
         )
 
-    # Produce a simple "full" replacement program.
-    # We randomise one constant so each generation is slightly different.
+    # Randomise constants so each generation is slightly different.
     rand_val = random.randint(5, 50)
     rand_mul = round(random.uniform(0.5, 3.0), 2)
-
-    # ~20% of programs will include a sleep that exceeds eval_timeout (for testing)
-    sleep_line = ""
-    if random.random() < 0.2:
-        sleep_time = 6  # seconds — should exceed eval_timeout=10
-        sleep_line = (
-            f"\n        import time; time.sleep({sleep_time})  # intentional timeout"
-        )
-        print(f"  ⏱ INJECTING SLEEP of {sleep_time}s (will timeout)")
-
-    fake_code = textwrap.dedent(f"""\
-        import random
-
-        def compute(seed: int = 42) -> float:
-            random.seed(seed){sleep_line}
-            x = sum(random.gauss(0, 1) for _ in range({rand_val}))
-            return abs(x) * {rand_mul}
-
-        def run_experiment(seed: int = 1) -> float:
-            return compute(seed)
-    """)
 
     fake_name = f"variant_{_CALL_COUNTER}"
     fake_desc = f"Changed loop count to {rand_val} and multiplier to {rand_mul}."
 
-    content = (
-        f"<NAME>{fake_name}</NAME>\n"
-        f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
-        f"```python\n{fake_code}```\n"
-    )
+    is_diff = "SEARCH/REPLACE" in system_msg
+
+    if is_diff:
+        # Diff patch: produce a SEARCH/REPLACE block that changes a constant
+        # in the parent code. Extract a recognisable line from the user message.
+        import re
+
+        # Find a line like "range(N)" in the parent code
+        range_match = re.search(r"range\((\d+)\)", msg)
+        if range_match:
+            old_val = range_match.group(1)
+            search_line = f"range({old_val})"
+            replace_line = f"range({rand_val})"
+        else:
+            # Fallback: change a generic constant
+            search_line = "seed: int = 42"
+            replace_line = f"seed: int = {rand_val}"
+
+        content = (
+            f"<NAME>{fake_name}</NAME>\n"
+            f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
+            f"<<<<<<< SEARCH\n"
+            f"{search_line}\n"
+            f">>>>>>> REPLACE\n"
+            f"{replace_line}\n"
+        )
+    else:
+        # Full patch: produce a complete replacement program.
+        # ~20% of programs will include a sleep that exceeds eval_timeout
+        sleep_line = ""
+        if random.random() < 0.2:
+            sleep_time = 6  # seconds — should exceed eval_timeout
+            sleep_line = (
+                f"\n        import time; time.sleep({sleep_time})"
+                f"  # intentional timeout"
+            )
+            print(f"  ⏱ INJECTING SLEEP of {sleep_time}s (will timeout)")
+
+        fake_code = textwrap.dedent(f"""\
+            import random
+
+            def compute(seed: int = 42) -> float:
+                random.seed(seed){sleep_line}
+                x = sum(random.gauss(0, 1) for _ in range({rand_val}))
+                return abs(x) * {rand_mul}
+
+            def run_experiment(seed: int = 1) -> float:
+                return compute(seed)
+        """)
+
+        content = (
+            f"<NAME>{fake_name}</NAME>\n"
+            f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
+            f"```python\n{fake_code}```\n"
+        )
 
     print(f"[MOCK RESPONSE]  name={fake_name}  (loop={rand_val}, mul={rand_mul})")
     print()
