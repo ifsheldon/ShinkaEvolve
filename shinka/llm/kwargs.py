@@ -11,11 +11,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 THINKING_TOKENS = {
-    "min": 1024,
-    "low": 2048,
-    "medium": 4096,
-    "high": 8192,
-    "max": 16384,
+    "min": 2048,
+    "low": 4096,
+    "medium": 8192,
+    "high": 16384,
+    "max": 32768,
+    "xhigh": 32768,  # Same as max; ensures "xhigh" doesn't KeyError on Gemini/Anthropic
+    "dynamic": -1,  # Gemini: -1 signals dynamic/unlimited thinking budget
 }
 
 
@@ -128,7 +130,10 @@ def sample_model_kwargs(
             kwargs_dict["reasoning"] = {"effort": "low"}
         elif r_effort == "max":
             kwargs_dict["reasoning"] = {"effort": "high"}
+        elif r_effort == "xhigh":
+            kwargs_dict["reasoning"] = {"effort": "xhigh"}
         else:
+            # Passes through "low", "medium", "high", "xhigh" directly
             kwargs_dict["reasoning"] = {"effort": r_effort}
 
         # 4.b.1) SET: auto-summarization for OpenAI reasoning effort

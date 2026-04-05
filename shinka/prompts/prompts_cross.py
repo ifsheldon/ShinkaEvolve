@@ -26,7 +26,8 @@ A description and argumentation process of the code you are proposing.
 ```
 </CODE>
 
-* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code. Do not change the code outside of these markers.
+* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
 * Make sure the file still runs after your changes.
 * Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.

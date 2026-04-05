@@ -25,7 +25,8 @@ A description and argumentation process of the code you are proposing.
 ```
 </CODE>
 
-* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code. Do not change the code outside of these markers.
+* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
 * Make sure the file still runs after your changes.
 * Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
@@ -52,6 +53,7 @@ Explain the completely different algorithmic approach you are taking and why it 
 </CODE>
 
 * Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Your algorithm should solve the same problem but use a fundamentally different approach.
 * Ensure the same inputs and outputs are maintained.
 * Think outside the box - consider different data structures, algorithms, or paradigms.
@@ -80,6 +82,7 @@ Explain how you drew inspiration from the context programs and what novel approa
 </CODE>
 
 * Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Learn from the context programs but don't copy their approaches directly.
 * Combine ideas in novel ways or apply insights to different algorithmic paradigms.
 * Maintain the same inputs and outputs as the original program.
@@ -108,6 +111,7 @@ Describe the structural changes you are making and how they improve the program'
 </CODE>
 
 * Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Focus on changing the program's structure: modularization, data flow, control flow, or architectural patterns.
 * The core problem-solving approach may be similar but organized differently.
 * Ensure the same inputs and outputs are maintained.
@@ -136,6 +140,7 @@ Identify the key parameters in the current approach and explain how your new par
 </CODE>
 
 * Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code.
+* CRITICAL: You may ONLY modify code between "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" markers. Everything outside those markers is read-only and will be discarded if changed. Do NOT add, remove, or move imports or any other code outside the markers. If you need additional imports, place them inside the evolvable block (e.g. at the top of the function body).
 * Identify parameters like: learning rates, iteration counts, thresholds, weights, selection criteria, etc.
 * Design a new algorithm with different parameter values or configurations.
 * Consider adaptive parameters, different optimization strategies, or alternative heuristics.

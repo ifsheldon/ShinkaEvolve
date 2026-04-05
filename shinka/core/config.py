@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
@@ -55,6 +56,15 @@ class EvolutionConfig:
     proposal_target_hard_cap: Optional[int] = None
     proposal_target_ewma_alpha: float = 0.3
 
+    # Interactive steering settings.
+    max_proposal_jobs: int = 1
+    max_db_workers: int = 4
+    reasoning_embed_sim_threshold: float = 0.95
+    use_reasoning_novelty: bool = False
+    eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
+    novelty_function_path: Optional[str] = None  # Path to custom novelty.py
+    callback_url: Optional[str] = None  # WebSocket push-update URL (evolve-shell)
+
     # Meta-prompt evolution settings.
     evolve_prompts: bool = False
     prompt_patch_types: List[str] = field(default_factory=default_prompt_patch_types)
@@ -69,3 +79,7 @@ class EvolutionConfig:
     prompt_epsilon: float = 0.1
     prompt_evo_top_k_programs: int = 3
     prompt_percentile_recompute_interval: int = 20
+
+    def __post_init__(self):
+        if self.callback_url is None:
+            self.callback_url = os.environ.get("EVOLVE_SHELL_URL")

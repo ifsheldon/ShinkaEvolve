@@ -5,9 +5,7 @@ from urllib.parse import urlparse
 
 from .pricing import get_provider
 
-_LOCAL_MODEL_PATTERN = re.compile(
-    r"^local/(?P<model>[^@]+)@(?P<url>https?://.+)$"
-)
+_LOCAL_MODEL_PATTERN = re.compile(r"^local/(?P<model>[^@]+)@(?P<url>https?://.+)$")
 _OPENROUTER_PREFIX = "openrouter/"
 
 

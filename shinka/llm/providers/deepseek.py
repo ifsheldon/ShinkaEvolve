@@ -1,8 +1,10 @@
 import backoff
+import logging
+
 import openai
+
 from .pricing import calculate_cost
 from .result import QueryResult
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +12,7 @@ logger = logging.getLogger(__name__)
 MAX_TRIES = 20
 MAX_VALUE = 20
 MAX_TIME = 600
+RESPONSE_SHAPE_EXCEPTIONS = (AttributeError, IndexError, TypeError)
 
 
 def backoff_handler(details):
@@ -60,7 +63,7 @@ def query_deepseek(
     content = response.choices[0].message.content
     try:
         thought = response.choices[0].message.reasoning_content
-    except:
+    except RESPONSE_SHAPE_EXCEPTIONS:
         thought = ""
     new_msg_history.append({"role": "assistant", "content": content})
 
@@ -69,7 +72,7 @@ def query_deepseek(
     all_out_tokens = response.usage.completion_tokens
     try:
         thinking_tokens = response.usage.completion_tokens_details.reasoning_tokens
-    except Exception:
+    except RESPONSE_SHAPE_EXCEPTIONS:
         thinking_tokens = 0
     out_tokens = all_out_tokens - thinking_tokens
     input_cost, output_cost = calculate_cost(model, in_tokens, all_out_tokens)
@@ -134,7 +137,7 @@ async def query_deepseek_async(
     content = response.choices[0].message.content
     try:
         thought = response.choices[0].message.reasoning_content
-    except:
+    except RESPONSE_SHAPE_EXCEPTIONS:
         thought = ""
     new_msg_history.append({"role": "assistant", "content": content})
     input_cost, output_cost = calculate_cost(
