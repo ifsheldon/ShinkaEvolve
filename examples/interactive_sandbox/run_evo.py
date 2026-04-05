@@ -184,8 +184,9 @@ def _mock_query(
             f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
             f"<<<<<<< SEARCH\n"
             f"{search_line}\n"
-            f">>>>>>> REPLACE\n"
+            f"=======\n"
             f"{replace_line}\n"
+            f">>>>>>> REPLACE\n"
         )
     else:
         # Full patch: produce a complete replacement program.
