@@ -201,6 +201,7 @@ def _mock_query(
             print(f"  ⏱ INJECTING SLEEP of {sleep_time}s (will timeout)")
 
         fake_code = textwrap.dedent(f"""\
+            # EVOLVE-BLOCK-START
             import random
 
             def compute(seed: int = 42) -> float:
@@ -210,6 +211,8 @@ def _mock_query(
 
             def run_experiment(seed: int = 1) -> float:
                 return compute(seed)
+
+            # EVOLVE-BLOCK-END
         """)
 
         content = (
