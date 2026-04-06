@@ -336,6 +336,7 @@ def _mock_get_kwargs(self, model_sample_probs=None):
 # ── Monkey-patch the LLM + Embedding clients ───────────────────────────────
 
 from shinka.llm.llm import LLMClient, AsyncLLMClient  # noqa: E402
+from shinka.llm import query as _query_module  # noqa: E402
 from shinka.embed.embedding import EmbeddingClient, AsyncEmbeddingClient  # noqa: E402
 
 
@@ -361,6 +362,25 @@ async def _mock_async_query(
     )
 
 
+async def _mock_query_async_standalone(
+    model_name: str,
+    msg: str,
+    system_msg: str,
+    msg_history: List = [],
+    output_model=None,
+    model_posteriors: Optional[Dict] = None,
+    **kwargs,
+) -> QueryResult:
+    """Mock for the module-level ``query_async`` used by batch_kwargs_query."""
+    return _mock_query(
+        None,  # no self — standalone function
+        msg,
+        system_msg,
+        msg_history,
+        llm_kwargs=kwargs,
+    )
+
+
 LLMClient.query = _mock_query
 LLMClient.get_kwargs = _mock_get_kwargs
 AsyncLLMClient.query = _mock_async_query
@@ -369,6 +389,12 @@ EmbeddingClient.__init__ = _mock_embed_init
 EmbeddingClient.get_embedding = _mock_get_embedding
 AsyncEmbeddingClient.__init__ = _mock_async_embed_init
 AsyncEmbeddingClient.embed_async = _mock_embed_async
+
+# Patch the module-level query_async used by batch_kwargs_query (meta summarizer).
+# Must patch both the source module and the importing module's local binding.
+_query_module.query_async = _mock_query_async_standalone
+import shinka.llm.llm as _llm_module  # noqa: E402
+_llm_module.query_async = _mock_query_async_standalone
 
 
 # ── Configuration ───────────────────────────────────────────────────────────
