@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
@@ -22,8 +23,6 @@ class EvolutionConfig:
     patch_types: List[str] = field(default_factory=default_patch_types)
     patch_type_probs: List[float] = field(default_factory=default_patch_type_probs)
     num_generations: int = 50
-    max_proposal_jobs: int = 1
-    max_db_workers: int = 4
     max_patch_resamples: int = 3
     max_patch_attempts: int = 1
     job_type: str = "local"
@@ -51,6 +50,22 @@ class EvolutionConfig:
     use_text_feedback: bool = False
     max_api_costs: Optional[float] = None
     inspiration_sort_order: str = "ascending"
+    enable_controlled_oversubscription: bool = True
+    proposal_target_mode: str = "adaptive"
+    proposal_target_min_samples: int = 5
+    proposal_target_ratio_cap: float = 2.0
+    proposal_buffer_max: int = 2
+    proposal_target_hard_cap: Optional[int] = None
+    proposal_target_ewma_alpha: float = 0.3
+
+    # Interactive steering settings.
+    max_proposal_jobs: int = 1
+    max_db_workers: int = 4
+    reasoning_embed_sim_threshold: float = 0.95
+    use_reasoning_novelty: bool = False
+    eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
+    novelty_function_path: Optional[str] = None  # Path to custom novelty.py
+    callback_url: Optional[str] = None  # WebSocket push-update URL (evolve-shell)
 
     # Meta-prompt evolution settings.
     evolve_prompts: bool = False
@@ -67,23 +82,6 @@ class EvolutionConfig:
     prompt_evo_top_k_programs: int = 3
     prompt_percentile_recompute_interval: int = 20
 
-    # Evaluation timeout
-    eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
-
-    # Post-evaluation novelty detection
-    novelty_function_path: Optional[str] = None  # Path to custom novelty.py
-
-    # Push-based callback URL for real-time frontend updates.
-    # When set, the runner POSTs lifecycle events (program.queued,
-    # program.generated) to this URL so the evolve-shell backend can
-    # push them to connected frontends via WebSocket.
-    # Falls back to the EVOLVE_SHELL_URL environment variable if not
-    # explicitly set, so co-located setups "just work" when start.py
-    # exports the variable.
-    callback_url: Optional[str] = None
-
     def __post_init__(self):
-        import os
-
         if self.callback_url is None:
             self.callback_url = os.environ.get("EVOLVE_SHELL_URL")

@@ -345,7 +345,7 @@ class ProgramDatabase:
                     if db_shm_file.exists():
                         db_shm_file.unlink()
                 db_file.parent.mkdir(parents=True, exist_ok=True)
-                self.conn = sqlite3.connect(str(db_file), timeout=30.0)
+                self.conn = sqlite3.connect(str(db_file), timeout=60.0)
                 logger.debug(f"Connected to SQLite database: {db_file}")
             else:
                 if not db_file.exists():
@@ -353,7 +353,7 @@ class ProgramDatabase:
                         f"Database file not found for read-only connection: {db_file}"
                     )
                 db_uri = f"file:{db_file}?mode=ro"
-                self.conn = sqlite3.connect(db_uri, uri=True, timeout=30.0)
+                self.conn = sqlite3.connect(db_uri, uri=True, timeout=60.0)
                 logger.debug(
                     "Connected to SQLite database in read-only mode: %s",
                     db_file,
@@ -426,7 +426,7 @@ class ProgramDatabase:
         # Set SQLite pragmas for better performance and stability
         # Use WAL mode for better concurrency support and reduced locking
         self.cursor.execute("PRAGMA journal_mode = WAL;")
-        self.cursor.execute("PRAGMA busy_timeout = 30000;")  # 30 second busy timeout
+        self.cursor.execute("PRAGMA busy_timeout = 60000;")  # 60 second busy timeout
         self.cursor.execute(
             "PRAGMA wal_autocheckpoint = 1000;"
         )  # Checkpoint every 1000 pages
@@ -509,6 +509,24 @@ class ProgramDatabase:
             )
             """
         )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generation_event_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generation INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source_job_id TEXT,
+                details TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_generation_event_log_generation
+            ON generation_event_log(generation)
+            """
+        )
 
         self.conn.commit()
 
@@ -551,7 +569,34 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during system_prompt_id migration: {e}")
 
-        # Migration 3: Add novelty_level column if it doesn't exist
+        # Migration 3: Restore legacy compute_time semantics when detailed
+        # pipeline timing is present. compute_time should mirror evaluation
+        # runtime, while pipeline_seconds stores end-to-end wall time.
+        try:
+            self.cursor.execute(
+                """
+                UPDATE programs
+                SET metadata = json_set(
+                    metadata,
+                    '$.compute_time',
+                    json_extract(metadata, '$.evaluation_seconds')
+                )
+                WHERE json_valid(metadata)
+                  AND json_type(metadata, '$.evaluation_seconds') IN ('real', 'integer')
+                  AND (
+                      json_type(metadata, '$.compute_time') IS NULL
+                      OR ABS(
+                          COALESCE(json_extract(metadata, '$.compute_time'), 0.0) -
+                          COALESCE(json_extract(metadata, '$.evaluation_seconds'), 0.0)
+                      ) > 1e-9
+                  )
+                """
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error during compute_time timing migration: {e}")
+
+        # Migration 4: Add novelty_level column if it doesn't exist
         try:
             if "novelty_level" not in columns:
                 logger.info("Adding novelty_level column to programs table")
@@ -563,7 +608,7 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during novelty_level migration: {e}")
 
-        # Migration 4: Add novelty_data column if it doesn't exist
+        # Migration 5: Add novelty_data column if it doesn't exist
         try:
             if "novelty_data" not in columns:
                 logger.info("Adding novelty_data column to programs table")
@@ -573,7 +618,7 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during novelty_data migration: {e}")
 
-        # Migration 5: Add reasoning_embedding column if it doesn't exist
+        # Migration 6: Add reasoning_embedding column if it doesn't exist
         try:
             if "reasoning_embedding" not in columns:
                 logger.info("Adding reasoning_embedding column to programs table")
@@ -585,7 +630,7 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during reasoning_embedding migration: {e}")
 
-        # Migration 6: Add reasoning_embedding_pca_2d column if it doesn't exist
+        # Migration 7: Add reasoning_embedding_pca_2d column if it doesn't exist
         try:
             if "reasoning_embedding_pca_2d" not in columns:
                 logger.info("Adding reasoning_embedding_pca_2d column to programs table")
@@ -597,7 +642,7 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during reasoning_embedding_pca_2d migration: {e}")
 
-        # Migration 7: Add reasoning_embedding_cluster_id column if it doesn't exist
+        # Migration 8: Add reasoning_embedding_cluster_id column if it doesn't exist
         try:
             if "reasoning_embedding_cluster_id" not in columns:
                 logger.info(
@@ -683,6 +728,31 @@ class ProgramDatabase:
         self.conn.commit()
 
     @db_retry()
+    def record_generation_event(
+        self,
+        generation: int,
+        status: str,
+        source_job_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        payload = None
+        if details is not None:
+            payload = json.dumps(clean_nan_values(details), sort_keys=True)
+
+        self.cursor.execute(
+            """
+            INSERT INTO generation_event_log (
+                generation, status, source_job_id, details, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (generation, status, source_job_id, payload, time.time()),
+        )
+        self.conn.commit()
+
+    @db_retry()
     def _count_programs_in_db(self) -> int:
         if not self.cursor:
             return 0
@@ -690,7 +760,47 @@ class ProgramDatabase:
         return (self.cursor.fetchone() or {"COUNT(*)": 0})["COUNT(*)"]
 
     @db_retry()
-    def add(self, program: Program, verbose: bool = False) -> str:
+    def has_program_with_source_job_id(self, source_job_id: str) -> bool:
+        """Return True if a program row already exists for the given job id."""
+        if not self.cursor:
+            return False
+        self.cursor.execute(
+            """
+            SELECT 1
+            FROM programs
+            WHERE json_valid(metadata)
+              AND json_extract(metadata, '$.source_job_id') = ?
+            LIMIT 1
+            """,
+            (source_job_id,),
+        )
+        return self.cursor.fetchone() is not None
+
+    @db_retry()
+    def get_program_by_source_job_id(self, source_job_id: str) -> Optional[Program]:
+        """Return the persisted program row for a completed scheduler job."""
+        if not self.cursor:
+            return None
+        self.cursor.execute(
+            """
+            SELECT *
+            FROM programs
+            WHERE json_valid(metadata)
+              AND json_extract(metadata, '$.source_job_id') = ?
+            LIMIT 1
+            """,
+            (source_job_id,),
+        )
+        row = self.cursor.fetchone()
+        return self._program_from_row(row) if row else None
+
+    @db_retry()
+    def add(
+        self,
+        program: Program,
+        verbose: bool = False,
+        defer_maintenance: bool = False,
+    ) -> str:
         """
         Add a program to the database with optimized performance.
 
@@ -705,6 +815,10 @@ class ProgramDatabase:
 
         Args:
             program: The Program object to add
+            verbose: Whether to print the per-program summary.
+            defer_maintenance: When true, skip archive / best / migration
+                follow-up work so callers can replay it later off the insert
+                hot path.
 
         Returns:
             str: The ID of the added program
@@ -749,9 +863,8 @@ class ProgramDatabase:
         embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
         embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
         reasoning_embedding_json = json.dumps(program.reasoning_embedding or [])
-        reasoning_embedding_pca_2d_json = json.dumps(
-            program.reasoning_embedding_pca_2d or []
-        )
+        reasoning_pca_2d_json = json.dumps(program.reasoning_embedding_pca_2d or [])
+        novelty_data_json = json.dumps(program.novelty_data or {})
         migration_history_json = json.dumps(program.migration_history or [])
 
         # Handle text_feedback - convert to string if it's a list
@@ -805,7 +918,7 @@ class ProgramDatabase:
                     embedding_pca_3d_json,
                     program.embedding_cluster_id,
                     reasoning_embedding_json,
-                    reasoning_embedding_pca_2d_json,
+                    reasoning_pca_2d_json,
                     program.reasoning_embedding_cluster_id,
                     program.correct,
                     program.children_count,
@@ -814,7 +927,7 @@ class ProgramDatabase:
                     migration_history_json,
                     program.system_prompt_id,
                     program.novelty_level,
-                    json.dumps(program.novelty_data) if program.novelty_data else None,
+                    novelty_data_json,
                 ),
             )
 
@@ -843,50 +956,95 @@ class ProgramDatabase:
             logger.error(f"Error adding program {program.id}: {e}")
             raise
 
-        self._update_archive(program)
-
-        # Update best program tracking
-        self._update_best_program(program)
-
-        # Recompute embeddings and clusters for all programs
-        self._recompute_embeddings_and_clusters()
-
         # Update generation tracking
         if program.generation > self.last_iteration:
             self.last_iteration = program.generation
             self._update_metadata_in_db("last_iteration", str(self.last_iteration))
 
-        # Print verbose summary if requested
-        if verbose:
-            self._print_program_summary(program)
+        if defer_maintenance:
+            return program.id
 
-        # Check if this program needs to be copied to other islands
-        if self.island_manager.needs_island_copies(program):
-            logger.info(
-                f"Creating copies of initial program {program.id} for all islands"
-            )
-            copy_ids = self.island_manager.copy_program_to_islands(program)
-            # Store so async callers can retrieve via get_and_clear_last_copy_ids()
-            self.island_manager._last_copy_ids = copy_ids
-            # Remove the flag from the original program's metadata
-            if program.metadata:
-                program.metadata.pop("_needs_island_copies", None)
-                metadata_json = json.dumps(program.metadata)
-                self.cursor.execute(
-                    "UPDATE programs SET metadata = ? WHERE id = ?",
-                    (metadata_json, program.id),
+        self.run_post_add_maintenance(
+            program,
+            verbose=verbose,
+            recompute_embeddings=True,
+        )
+        return program.id
+
+    def run_post_add_maintenance(
+        self,
+        program: Program,
+        verbose: bool = False,
+        recompute_embeddings: bool = False,
+    ) -> None:
+        """Replay deferred maintenance for a program that is already inserted."""
+        self.run_post_add_maintenance_batch(
+            [program],
+            verbose=verbose,
+            recompute_embeddings=recompute_embeddings,
+        )
+
+    def run_post_add_maintenance_batch(
+        self,
+        programs: List[Program],
+        verbose: bool = False,
+        recompute_embeddings: bool = False,
+    ) -> None:
+        """Replay deferred maintenance for already-inserted programs."""
+        if not programs:
+            return
+
+        for program in sorted(programs, key=lambda item: item.generation):
+            maintenance_started_at = time.time()
+            self._update_archive(program)
+            self._update_best_program(program)
+
+            if verbose:
+                self._print_program_summary(program)
+
+            if self.island_manager.needs_island_copies(program):
+                logger.info(
+                    f"Creating copies of initial program {program.id} for all islands"
                 )
-                self.conn.commit()
+                copy_ids = self.island_manager.copy_program_to_islands(program)
+                self.island_manager._last_copy_ids = copy_ids
+                if program.metadata:
+                    program.metadata.pop("_needs_island_copies", None)
+                    metadata_json = json.dumps(program.metadata)
+                    self.cursor.execute(
+                        "UPDATE programs SET metadata = ? WHERE id = ?",
+                        (metadata_json, program.id),
+                    )
+                    self.conn.commit()
 
-        # Check if migration should be scheduled
-        if self.island_manager.should_schedule_migration(program):
-            self._schedule_migration = True
+            if self.island_manager.should_schedule_migration(program):
+                self._schedule_migration = True
 
-        # Check for stagnation and spawn new island if needed
-        self.check_and_spawn_island_if_stagnant(program.generation)
+            self.check_and_spawn_island_if_stagnant(program.generation)
+
+            maintenance_finished_at = time.time()
+            program.metadata = dict(program.metadata or {})
+            program.metadata["postprocess_db_maintenance_applied"] = True
+            program.metadata["postprocess_db_maintenance_started_at"] = (
+                maintenance_started_at
+            )
+            program.metadata["postprocess_db_maintenance_finished_at"] = (
+                maintenance_finished_at
+            )
+            program.metadata["postprocess_db_maintenance_seconds"] = max(
+                0.0, maintenance_finished_at - maintenance_started_at
+            )
+            metadata_json = json.dumps(program.metadata)
+            self.cursor.execute(
+                "UPDATE programs SET metadata = ? WHERE id = ?",
+                (metadata_json, program.id),
+            )
+            self.conn.commit()
+
+        if recompute_embeddings:
+            self._recompute_embeddings_and_clusters()
 
         self.check_scheduled_operations()
-        return program.id
 
     def _program_from_row(self, row: sqlite3.Row) -> Optional[Program]:
         """Helper to create a Program object from a database row."""
@@ -986,7 +1144,7 @@ class ProgramDatabase:
         else:
             program_data["embedding_pca_3d"] = []
 
-        # Handle reasoning embedding
+        # Handle reasoning embeddings
         reasoning_embedding_text = program_data.get("reasoning_embedding")
         if reasoning_embedding_text:
             try:
@@ -998,18 +1156,29 @@ class ProgramDatabase:
         else:
             program_data["reasoning_embedding"] = []
 
-        reasoning_embedding_pca_2d_text = program_data.get(
-            "reasoning_embedding_pca_2d"
-        )
-        if reasoning_embedding_pca_2d_text:
+        reasoning_pca_2d_text = program_data.get("reasoning_embedding_pca_2d")
+        if reasoning_pca_2d_text:
             try:
                 program_data["reasoning_embedding_pca_2d"] = json.loads(
-                    reasoning_embedding_pca_2d_text
+                    reasoning_pca_2d_text
                 )
             except json.JSONDecodeError:
                 program_data["reasoning_embedding_pca_2d"] = []
         else:
             program_data["reasoning_embedding_pca_2d"] = []
+
+        # Handle novelty data
+        novelty_data_text = program_data.get("novelty_data")
+        if novelty_data_text:
+            try:
+                program_data["novelty_data"] = json.loads(novelty_data_text)
+            except json.JSONDecodeError:
+                program_data["novelty_data"] = {}
+        else:
+            program_data["novelty_data"] = {}
+
+        if "novelty_level" not in program_data or program_data["novelty_level"] is None:
+            program_data["novelty_level"] = "none"
 
         # Handle migration_history
         migration_history_text = program_data.get("migration_history")
@@ -1051,6 +1220,24 @@ class ProgramDatabase:
         self.cursor.execute("SELECT * FROM programs WHERE id = ?", (program_id,))
         row = self.cursor.fetchone()
         return self._program_from_row(row)
+
+    def get_programs_by_ids(self, program_ids: List[str]) -> List[Program]:
+        """Resolve multiple program IDs into Program objects.
+
+        Args:
+            program_ids: Program IDs to resolve.
+
+        Returns:
+            List of Program objects in input order, skipping missing IDs.
+        """
+        if not program_ids:
+            return []
+        programs: List[Program] = []
+        for pid in program_ids:
+            p = self.get(pid)
+            if p is not None:
+                programs.append(p)
+        return programs
 
     @db_retry()
     def get_programs_by_ids(self, program_ids: List[str]) -> List[Program]:
@@ -1900,7 +2087,7 @@ class ProgramDatabase:
             )
             db_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        self.conn = sqlite3.connect(str(db_path_obj), timeout=30.0)
+        self.conn = sqlite3.connect(str(db_path_obj), timeout=60.0)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         self._create_tables()
@@ -2553,6 +2740,80 @@ class ProgramDatabase:
         )
         return similarity_scores
 
+    def compute_reasoning_similarity_thread_safe(
+        self, vec: List[float], island_idx: int
+    ) -> List[float]:
+        """Thread-safe reasoning embedding similarity computation."""
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                self.config.db_path, check_same_thread=False, timeout=60.0
+            )
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT reasoning_embedding FROM programs "
+                "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
+                "AND reasoning_embedding != '[]'",
+                (island_idx,),
+            )
+            rows = cursor.fetchall()
+
+            if not rows:
+                return []
+
+            similarities = []
+            for row in rows:
+                db_embedding = json.loads(row["reasoning_embedding"])
+                if db_embedding:
+                    sim = self._cosine_similarity(vec, db_embedding)
+                    similarities.append(sim)
+            return similarities
+
+        except Exception as e:
+            logger.error(f"Thread-safe reasoning similarity computation failed: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+
+    @db_retry()
+    def compute_reasoning_similarity(
+        self, reasoning_embedding: List[float], island_idx: int
+    ) -> List[float]:
+        """Compute similarity between a reasoning embedding and all programs on an island."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        if not reasoning_embedding:
+            return []
+
+        self.cursor.execute(
+            "SELECT id, reasoning_embedding FROM programs "
+            "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
+            "AND reasoning_embedding != '[]'",
+            (island_idx,),
+        )
+        rows = self.cursor.fetchall()
+
+        if not rows:
+            return []
+
+        similarity_scores = []
+        for row in rows:
+            try:
+                embedding = json.loads(row["reasoning_embedding"])
+                if embedding:
+                    similarity = self._cosine_similarity(reasoning_embedding, embedding)
+                    similarity_scores.append(similarity)
+                else:
+                    similarity_scores.append(0.0)
+            except json.JSONDecodeError:
+                similarity_scores.append(0.0)
+
+        return similarity_scores
+
     @db_retry()
     def get_most_similar_program(
         self, code_embedding: List[float], island_idx: int
@@ -2844,9 +3105,6 @@ class ProgramDatabase:
         except Exception as e:
             self.conn.rollback()
             logger.error("Failed to update programs with new embedding features: %s", e)
-
-        # --- Reasoning embeddings PCA/clustering (independent from code embeddings) ---
-        self._recompute_reasoning_clusters(num_clusters, self.cursor, self.conn)
 
     def _recompute_reasoning_clusters(self, num_clusters, cursor, conn):
         """Recompute PCA 2D and GMM clustering for reasoning embeddings."""

@@ -44,7 +44,66 @@ from shinka.llm.providers.result import QueryResult
 
 # ── Mock LLM ────────────────────────────────────────────────────────────────
 
+MAX_TOKENS = 2048
 _CALL_COUNTER = 0
+_META_COUNTER = 0
+
+
+def _is_meta_call(system_msg: str) -> bool:
+    """Detect whether this LLM call is a meta-summarization step."""
+    meta_markers = [
+        "analyzing an individual program",  # Step 1
+        "global insights",                  # Step 2
+        "actionable recommendations",       # Step 3
+    ]
+    lower = system_msg.lower()
+    return any(m in lower for m in meta_markers)
+
+
+def _mock_meta_response(system_msg: str, msg: str) -> str:
+    """Return a plausible mock response for meta-summarization calls."""
+    global _META_COUNTER
+    _META_COUNTER += 1
+
+    lower_sys = system_msg.lower()
+
+    if "analyzing an individual program" in lower_sys:
+        # Step 1: Individual program summary
+        return (
+            f"**Summary:** This program variant #{_META_COUNTER} modifies loop "
+            f"parameters and multiplier constants. The approach explores numeric "
+            f"ranges to maximise the returned value.\n"
+            f"**Strengths:** Simple and deterministic.\n"
+            f"**Weaknesses:** Limited diversity in strategies."
+        )
+
+    if "global insights" in lower_sys:
+        # Step 2: Global insights scratchpad
+        return (
+            "## Key Observations\n\n"
+            "1. Most successful programs use higher loop counts combined "
+            "with moderate multipliers.\n"
+            "2. Programs that time out tend to include unnecessary sleeps.\n"
+            "3. The search space is narrow — all variants follow the same "
+            "sum-of-gaussians template.\n\n"
+            "## Promising Directions\n\n"
+            "- Explore alternative distributions (uniform, exponential).\n"
+            "- Increase the seed diversity to avoid local optima.\n"
+            "- Consider caching intermediate results for efficiency."
+        )
+
+    if "actionable recommendations" in lower_sys:
+        # Step 3: Recommendations
+        return (
+            "1. Increase the loop count beyond 50 to explore larger sums.\n"
+            "2. Try replacing gauss(0,1) with a heavier-tailed distribution.\n"
+            "3. Use multiple seeds and return the maximum across runs.\n"
+            "4. Avoid adding sleep() calls that risk timeout.\n"
+            "5. Consider a two-stage approach: coarse search then refinement."
+        )
+
+    # Fallback — shouldn't happen
+    return f"Mock meta response #{_META_COUNTER} for an unrecognised meta step."
 
 
 def _mock_query(
@@ -61,6 +120,7 @@ def _mock_query(
 
     * Prints the full system + user prompt so you can inspect them.
     * Returns a trivially modified Python program (changes a constant).
+    * For meta-summarization calls, returns appropriate section content.
     * Cost is always $0.
     """
     global _CALL_COUNTER
@@ -76,40 +136,98 @@ def _mock_query(
     print(f"\n[USER MESSAGE]\n{textwrap.shorten(msg, width=1200, placeholder=' ...')}")
     print(sep)
 
-    # Produce a simple "full" replacement program.
-    # We randomise one constant so each generation is slightly different.
+    # Meta-summarization calls get their own response format
+    if _is_meta_call(system_msg):
+        content = _mock_meta_response(system_msg, msg)
+        print(f"[MOCK META RESPONSE]  ({len(content)} chars)")
+        print()
+        return QueryResult(
+            content=content,
+            msg=msg,
+            system_msg=system_msg,
+            new_msg_history=[],
+            model_name="mock-llm",
+            kwargs=llm_kwargs or {},
+            input_tokens=len(msg) // 4,
+            output_tokens=len(content) // 4,
+            cost=0.0,
+            model_posteriors={"mock-llm": 1.0},
+        )
+
+    # Randomise constants so each generation is slightly different.
     rand_val = random.randint(5, 50)
     rand_mul = round(random.uniform(0.5, 3.0), 2)
-
-    # ~20% of programs will include a sleep that exceeds eval_timeout (for testing)
-    sleep_line = ""
-    if random.random() < 0.2:
-        sleep_time = 6  # seconds — should exceed eval_timeout=10
-        sleep_line = (
-            f"\n        import time; time.sleep({sleep_time})  # intentional timeout"
-        )
-        print(f"  ⏱ INJECTING SLEEP of {sleep_time}s (will timeout)")
-
-    fake_code = textwrap.dedent(f"""\
-        import random
-
-        def compute(seed: int = 42) -> float:
-            random.seed(seed){sleep_line}
-            x = sum(random.gauss(0, 1) for _ in range({rand_val}))
-            return abs(x) * {rand_mul}
-
-        def run_experiment(seed: int = 1) -> float:
-            return compute(seed)
-    """)
 
     fake_name = f"variant_{_CALL_COUNTER}"
     fake_desc = f"Changed loop count to {rand_val} and multiplier to {rand_mul}."
 
-    content = (
-        f"<NAME>{fake_name}</NAME>\n"
-        f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
-        f"```python\n{fake_code}```\n"
-    )
+    is_diff = "SEARCH/REPLACE" in system_msg
+
+    if is_diff:
+        # Diff patch: produce a SEARCH/REPLACE block that changes a constant
+        # in the parent code. Extract from the "Current program" code block
+        # (first ```python...``` in the message), not from inspiration history.
+        import re
+
+        # Extract the parent code block — it's the LAST ```python block
+        # in the message (eval history comes first, parent code comes last).
+        code_blocks = re.findall(
+            r"```(?:python)?\s*\n(.*?)```", msg, re.DOTALL
+        )
+        parent_code_section = code_blocks[-1] if code_blocks else msg
+
+        # Find a line like "range(N)" in the parent code specifically
+        range_match = re.search(r"range\((\d+)\)", parent_code_section)
+        if range_match:
+            old_val = range_match.group(1)
+            search_line = f"range({old_val})"
+            replace_line = f"range({rand_val})"
+        else:
+            # Fallback: change a generic constant
+            search_line = "seed: int = 42"
+            replace_line = f"seed: int = {rand_val}"
+
+        content = (
+            f"<NAME>{fake_name}</NAME>\n"
+            f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
+            f"<<<<<<< SEARCH\n"
+            f"{search_line}\n"
+            f"=======\n"
+            f"{replace_line}\n"
+            f">>>>>>> REPLACE\n"
+        )
+    else:
+        # Full patch: produce a complete replacement program.
+        # ~20% of programs will include a sleep that exceeds eval_timeout
+        sleep_line = ""
+        if random.random() < 0.2:
+            sleep_time = 6  # seconds — should exceed eval_timeout
+            sleep_line = (
+                f"\n        import time; time.sleep({sleep_time})"
+                f"  # intentional timeout"
+            )
+            print(f"  ⏱ INJECTING SLEEP of {sleep_time}s (will timeout)")
+
+        fake_code = textwrap.dedent(f"""\
+            # EVOLVE-BLOCK-START
+            import random
+
+            def compute(seed: int = 42) -> float:
+                random.seed(seed){sleep_line}
+                x = sum(random.gauss(0, 1) for _ in range({rand_val}))
+                return abs(x) * {rand_mul}
+
+            def run_experiment(seed: int = 1) -> float:
+                return compute(seed)
+
+            # EVOLVE-BLOCK-END
+        """)
+
+        content = (
+            f"<NAME>{fake_name}</NAME>\n"
+            f"<DESCRIPTION>{fake_desc}</DESCRIPTION>\n\n"
+            f"```python\n{fake_code}```\n"
+        )
 
     print(f"[MOCK RESPONSE]  name={fake_name}  (loop={rand_val}, mul={rand_mul})")
     print()
@@ -218,6 +336,7 @@ def _mock_get_kwargs(self, model_sample_probs=None):
 # ── Monkey-patch the LLM + Embedding clients ───────────────────────────────
 
 from shinka.llm.llm import LLMClient, AsyncLLMClient  # noqa: E402
+from shinka.llm import query as _query_module  # noqa: E402
 from shinka.embed.embedding import EmbeddingClient, AsyncEmbeddingClient  # noqa: E402
 
 
@@ -243,6 +362,25 @@ async def _mock_async_query(
     )
 
 
+async def _mock_query_async_standalone(
+    model_name: str,
+    msg: str,
+    system_msg: str,
+    msg_history: List = [],
+    output_model=None,
+    model_posteriors: Optional[Dict] = None,
+    **kwargs,
+) -> QueryResult:
+    """Mock for the module-level ``query_async`` used by batch_kwargs_query."""
+    return _mock_query(
+        None,  # no self — standalone function
+        msg,
+        system_msg,
+        msg_history,
+        llm_kwargs=kwargs,
+    )
+
+
 LLMClient.query = _mock_query
 LLMClient.get_kwargs = _mock_get_kwargs
 AsyncLLMClient.query = _mock_async_query
@@ -251,6 +389,19 @@ EmbeddingClient.__init__ = _mock_embed_init
 EmbeddingClient.get_embedding = _mock_get_embedding
 AsyncEmbeddingClient.__init__ = _mock_async_embed_init
 AsyncEmbeddingClient.embed_async = _mock_embed_async
+
+# Patch the module-level query_async used by batch_kwargs_query (meta summarizer).
+# Must patch both the source module and the importing module's local binding.
+_query_module.query_async = _mock_query_async_standalone
+import shinka.llm.llm as _llm_module  # noqa: E402
+_llm_module.query_async = _mock_query_async_standalone
+
+# Patch sample_model_kwargs — it tries to resolve model names against pricing.csv
+# which fails for "mock-llm". Replace with a function that returns mock kwargs.
+def _mock_sample_model_kwargs(**_kw):
+    return {"model_name": "mock-llm", "temperature": 0.7, "max_output_tokens": 2048}
+
+_llm_module.sample_model_kwargs = _mock_sample_model_kwargs
 
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -294,6 +445,12 @@ def _create_evo_config() -> EvolutionConfig:
             temperatures=[0.7],
             max_tokens=2048,
         ),
+        # Meta-summarization: runs every 10 programs, produces 3-section output
+        meta_rec_interval=10,
+        meta_llm_models=["mock-llm"],
+        meta_llm_kwargs={"max_tokens": MAX_TOKENS},
+        meta_max_recommendations=5,
+        sample_single_meta_rec=True,
         embedding_model="mock-embedding",  # use mocked embedding
         code_embed_sim_threshold=0.95,  # enable novelty rejection
         reasoning_embed_sim_threshold=0.95,  # reasoning embedding threshold

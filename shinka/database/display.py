@@ -138,8 +138,13 @@ class DatabaseDisplay:
 
         # Format time
         time_display = "[dim]N/A[/dim]"
-        if program.metadata and "compute_time" in program.metadata:
-            time_val = program.metadata["compute_time"]
+        if program.metadata:
+            time_val = program.metadata.get(
+                "compute_time", program.metadata.get("pipeline_seconds")
+            )
+        else:
+            time_val = None
+        if time_val is not None:
             if time_val > 60:
                 time_display = f"{time_val / 60:.1f}m"
             else:
@@ -208,6 +213,8 @@ class DatabaseDisplay:
                         total_meta_cost += float(metadata["meta_cost"])
                     if "compute_time" in metadata:
                         total_compute_time += float(metadata["compute_time"])
+                    elif "pipeline_seconds" in metadata:
+                        total_compute_time += float(metadata["pipeline_seconds"])
 
                 if row["combined_score"] is not None:
                     score = float(row["combined_score"])
@@ -217,7 +224,6 @@ class DatabaseDisplay:
                         best_score = score
                     num_with_scores += 1
                     all_scores.append(score)
-
         # Table 1: Summary Table
         summary_table = RichTable(
             title="[bold cyan]Program Database Summary[/bold cyan]",
@@ -626,8 +632,12 @@ class DatabaseDisplay:
 
             # Time
             time_display = "[dim]N/A[/dim]"
-            if prog.metadata and "compute_time" in prog.metadata:
-                time_val = prog.metadata["compute_time"]
+            time_val = None
+            if prog.metadata:
+                time_val = prog.metadata.get(
+                    "compute_time", prog.metadata.get("pipeline_seconds")
+                )
+            if time_val is not None:
                 if time_val > 60:
                     time_display = f"{time_val / 60:.1f}m"
                 else:

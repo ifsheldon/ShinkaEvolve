@@ -46,6 +46,16 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _resolve_runner_bool(
+    cli_value: Optional[bool], runner_config: Dict[str, Any], key: str, default: bool
+) -> bool:
+    if cli_value is not None:
+        return cli_value
+    if key in runner_config:
+        return bool(runner_config[key])
+    return default
+
+
 def _build_parser() -> argparse.ArgumentParser:
     description = (
         "Run async Shinka evolution from a task directory.\n\n"
@@ -70,7 +80,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "  quality controls: --set evo.max_patch_resamples=3 "
         "--set evo.max_patch_attempts=1 --set evo.max_novelty_attempts=3\n"
         "  embeddings: --set evo.embedding_model=text-embedding-3-small "
-        "--set evo.code_embed_sim_threshold=0.99\n\n"
+        "--set evo.code_embed_sim_threshold=0.99\n"
+        "              --set "
+        "evo.embedding_model=local/text-embeddings-inference@http://localhost:8080/v1\n\n"
         "Common db settings via --set:\n"
         "  islands: --set db.num_islands=2\n"
         "  parent selection: --set db.parent_selection_strategy=weighted\n"
@@ -174,8 +186,9 @@ def _build_parser() -> argparse.ArgumentParser:
     output_group = parser.add_argument_group("output/verbosity")
     output_group.add_argument(
         "--verbose",
-        action="store_true",
-        help="Enable verbose runner logging.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable verbose runner logging (default: enabled; use --no-verbose to disable).",
     )
     output_group.add_argument(
         "--debug",
@@ -452,7 +465,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.max_proposal_jobs = runner_config.get("max_proposal_jobs")
         if args.max_db_workers is None:
             args.max_db_workers = runner_config.get("max_db_workers")
-        args.verbose = args.verbose or bool(runner_config.get("verbose", False))
+        args.verbose = _resolve_runner_bool(
+            args.verbose, runner_config, "verbose", True
+        )
         args.debug = args.debug or bool(runner_config.get("debug", False))
 
         evo_config = EvolutionConfig(**evo_values)

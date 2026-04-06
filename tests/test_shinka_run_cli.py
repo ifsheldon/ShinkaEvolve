@@ -171,6 +171,49 @@ def test_shinka_run_parses_activate_script_override(tmp_path, monkeypatch):
     assert job_config.activate_script == ".venv/bin/activate"
 
 
+def test_shinka_run_defaults_to_verbose_logging(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    results_dir = tmp_path / "results_default_verbose"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    assert _DummyRunner.last_kwargs["verbose"] is True
+
+
+def test_shinka_run_allows_disabling_verbose_logging(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    results_dir = tmp_path / "results_no_verbose"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+            "--no-verbose",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    assert _DummyRunner.last_kwargs["verbose"] is False
+
+
 def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeypatch):
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)
@@ -231,10 +274,59 @@ def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeyp
     assert _DummyRunner.last_kwargs["debug"] is True
 
 
+def test_shinka_run_respects_config_verbose_false(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "shinka.yaml").write_text(
+        "verbose: false\n",
+        encoding="utf-8",
+    )
+    results_dir = tmp_path / "results_config_no_verbose"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--config-fname",
+            "shinka.yaml",
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    assert _DummyRunner.last_kwargs["verbose"] is False
+
+
 def test_shinka_run_invalid_config_field_fails(tmp_path):
     task_dir = _make_task_dir(tmp_path)
     (task_dir / "bad.yaml").write_text(
         "evo_config:\n  unknown_field: 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli_run.main(
+            [
+                "--task-dir",
+                str(task_dir),
+                "--config-fname",
+                "bad.yaml",
+                "--results_dir",
+                str(tmp_path / "results"),
+                "--num_generations",
+                "5",
+            ]
+        )
+    assert exc_info.value.code == 2
+
+
+def test_shinka_run_rejects_nested_concurrency_config(tmp_path):
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "bad.yaml").write_text(
+        ("evo_config:\n  max_proposal_jobs: 3\n  max_db_workers: 2\n"),
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc_info:

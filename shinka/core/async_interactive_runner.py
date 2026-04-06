@@ -646,9 +646,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 action_type, generation, t_patch_elapsed, success,
             )
             if not success:
+                error_detail = meta_patch_data.get("error_attempt", "unknown")
                 logger.warning(
-                    "Interactive %s: patch not successful for gen %d",
-                    action_type, generation,
+                    "Interactive %s: patch not successful for gen %d: %s",
+                    action_type, generation, error_detail,
                 )
                 return None
 
@@ -676,11 +677,14 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             )
 
             api_costs = meta_patch_data.get("api_costs", 0.0)
+            now = time.time()
             running_job = AsyncRunningJob(
                 job_id=job_id,
                 exec_fname=exec_fname,
                 results_dir=results_dir,
-                start_time=time.time(),
+                start_time=now,
+                proposal_started_at=now,
+                evaluation_submitted_at=now,
                 generation=generation,
                 parent_id=parent_program.id,
                 archive_insp_ids=[p.id for p in archive_programs],
