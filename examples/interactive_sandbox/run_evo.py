@@ -396,6 +396,13 @@ _query_module.query_async = _mock_query_async_standalone
 import shinka.llm.llm as _llm_module  # noqa: E402
 _llm_module.query_async = _mock_query_async_standalone
 
+# Patch sample_model_kwargs — it tries to resolve model names against pricing.csv
+# which fails for "mock-llm". Replace with a function that returns mock kwargs.
+def _mock_sample_model_kwargs(**_kw):
+    return {"model_name": "mock-llm", "temperature": 0.7, "max_output_tokens": 2048}
+
+_llm_module.sample_model_kwargs = _mock_sample_model_kwargs
+
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
