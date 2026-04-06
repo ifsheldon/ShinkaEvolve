@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from shinka.database.dbase import Program
 
 logger = logging.getLogger(__name__)
@@ -212,6 +214,92 @@ class NoveltyDetector:
                 prog_data, parent_data, insp_data
             )
             return NoveltyResult(level=level, display_data=display_data)
+
+    def compute_dissimilarity(
+        self,
+        embedding: List[float],
+        all_previous_embeddings: List[List[float]],
+    ) -> float:
+        """Compute minimum cosine distance between embedding and all previous embeddings.
+
+        Returns the minimum distance (1 - cosine_similarity).
+        Returns 1.0 if no previous embeddings exist.
+        """
+        if not embedding or not all_previous_embeddings:
+            return 1.0
+
+        query = np.asarray(embedding, dtype=np.float64)
+        query_norm = np.linalg.norm(query)
+        if query_norm == 0.0:
+            return 1.0
+
+        min_distance = 1.0
+        for prev in all_previous_embeddings:
+            prev_arr = np.asarray(prev, dtype=np.float64)
+            if prev_arr.shape != query.shape:
+                continue
+            prev_norm = np.linalg.norm(prev_arr)
+            if prev_norm == 0.0:
+                continue
+            cosine_sim = float(np.dot(query, prev_arr) / (query_norm * prev_norm))
+            # Clamp to [-1, 1] to handle floating-point errors
+            cosine_sim = max(-1.0, min(1.0, cosine_sim))
+            distance = 1.0 - cosine_sim
+            if distance < min_distance:
+                min_distance = distance
+        return min_distance
+
+    def compute_all_metrics(
+        self,
+        program: Program,
+        parent: Optional[Program],
+        all_previous_code_embeddings: List[List[float]],
+        all_previous_reasoning_embeddings: List[List[float]],
+    ) -> Dict[str, Optional[float]]:
+        """Compute all 3 novelty metrics for a program.
+
+        Args:
+            program: The newly evaluated program.
+            parent: The parent program (None for gen-0).
+            all_previous_code_embeddings: Code embeddings of all earlier programs.
+            all_previous_reasoning_embeddings: Reasoning embeddings of all earlier programs.
+
+        Returns:
+            {"score_change": float|None,
+             "dissimilarity_code": float|None,
+             "dissimilarity_reasoning": float|None}
+        """
+        # --- score_change ---
+        score_change: Optional[float] = None
+        if parent is not None and program.correct:
+            parent_score = parent.combined_score
+            program_score = program.combined_score
+            if parent_score == 0.0:
+                score_change = 1.0 if program_score > 0.0 else 0.0
+            else:
+                score_change = (program_score - parent_score) / abs(parent_score)
+
+        # --- dissimilarity_code ---
+        dissimilarity_code: Optional[float] = None
+        prog_embedding = program.embedding or []
+        if prog_embedding:
+            dissimilarity_code = self.compute_dissimilarity(
+                prog_embedding, all_previous_code_embeddings
+            )
+
+        # --- dissimilarity_reasoning ---
+        dissimilarity_reasoning: Optional[float] = None
+        prog_reasoning_embedding = program.reasoning_embedding or []
+        if prog_reasoning_embedding:
+            dissimilarity_reasoning = self.compute_dissimilarity(
+                prog_reasoning_embedding, all_previous_reasoning_embeddings
+            )
+
+        return {
+            "score_change": score_change,
+            "dissimilarity_code": dissimilarity_code,
+            "dissimilarity_reasoning": dissimilarity_reasoning,
+        }
 
     # -- internal ------------------------------------------------------------
 

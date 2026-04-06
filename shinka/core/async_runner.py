@@ -3239,6 +3239,66 @@ class ShinkaEvolveRunner:
         finally:
             conn.close()
 
+    def _get_interactive_db(self):
+        """Return the InteractiveDatabase if available (overridden by interactive runner)."""
+        return None
+
+    @staticmethod
+    def _apply_novelty_thresholds(
+        metrics: Dict[str, Optional[float]],
+        settings: Optional[Dict[str, Any]],
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Determine novelty level from cached metrics and threshold settings.
+
+        Returns (novelty_level_str, novelty_data_dict).
+        """
+        # Default settings
+        mode = "score_change"
+        sc_moderate = 0.15
+        sc_high = 0.30
+        ds_moderate = 0.3
+        ds_high = 0.5
+        ds_embedding = "code"
+
+        if settings:
+            mode = settings.get("mode", mode)
+            sc_moderate = settings.get("score_change_moderate", sc_moderate)
+            sc_high = settings.get("score_change_high", sc_high)
+            ds_moderate = settings.get("dissimilarity_moderate", ds_moderate)
+            ds_high = settings.get("dissimilarity_high", ds_high)
+            ds_embedding = settings.get("dissimilarity_embedding", ds_embedding)
+
+        display: Dict[str, Any] = {k: v for k, v in metrics.items()}
+
+        if mode == "score_change":
+            val = metrics.get("score_change")
+            if val is None:
+                return NoveltyLevel.NONE.value, display
+            if val >= sc_high:
+                display["reason"] = f"{val * 100:.1f}% gain (>={sc_high * 100:.0f}%)"
+                return NoveltyLevel.HIGH.value, display
+            if val >= sc_moderate:
+                display["reason"] = f"{val * 100:.1f}% gain (>={sc_moderate * 100:.0f}%)"
+                return NoveltyLevel.MODERATE.value, display
+            return NoveltyLevel.NONE.value, display
+        else:
+            # dissimilarity mode
+            key = (
+                "dissimilarity_code"
+                if ds_embedding == "code"
+                else "dissimilarity_reasoning"
+            )
+            val = metrics.get(key)
+            if val is None:
+                return NoveltyLevel.NONE.value, display
+            if val >= ds_high:
+                display["reason"] = f"dissimilarity {val:.3f} (>={ds_high})"
+                return NoveltyLevel.HIGH.value, display
+            if val >= ds_moderate:
+                display["reason"] = f"dissimilarity {val:.3f} (>={ds_moderate})"
+                return NoveltyLevel.MODERATE.value, display
+            return NoveltyLevel.NONE.value, display
+
     async def _run_patch_async(
         self,
         parent_program: Program,
@@ -3935,42 +3995,106 @@ class ShinkaEvolveRunner:
 
                 # --- Post-evaluation novelty detection ---
                 try:
-                    parent_prog_for_novelty = None
-                    if job.parent_id:
-                        parent_prog_for_novelty = await self.async_db.get_async(
-                            job.parent_id
+                    if self.novelty_detector._function_path:
+                        # Custom novelty function: keep existing behaviour
+                        parent_prog_for_novelty = None
+                        if job.parent_id:
+                            parent_prog_for_novelty = await self.async_db.get_async(
+                                job.parent_id
+                            )
+
+                        inspiration_programs = []
+                        for insp_id in (job.archive_insp_ids or []) + (
+                            job.top_k_insp_ids or []
+                        ):
+                            insp = await self.async_db.get_async(insp_id)
+                            if insp:
+                                inspiration_programs.append(insp)
+
+                        novelty_result = self.novelty_detector.detect(
+                            program=program,
+                            parent=parent_prog_for_novelty,
+                            inspirations=inspiration_programs,
                         )
 
-                    inspiration_programs = []
-                    for insp_id in (job.archive_insp_ids or []) + (
-                        job.top_k_insp_ids or []
-                    ):
-                        insp = await self.async_db.get_async(insp_id)
-                        if insp:
-                            inspiration_programs.append(insp)
+                        if novelty_result.level != NoveltyLevel.NONE:
+                            program.novelty_level = novelty_result.level.value
+                            program.novelty_data = novelty_result.display_data or {}
+                            loop = asyncio.get_event_loop()
+                            await loop.run_in_executor(
+                                None,
+                                self._update_novelty_in_db,
+                                program.id,
+                                novelty_result.level.value,
+                                novelty_result.display_data,
+                            )
+                            logger.info(
+                                f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
+                                f"Program {program.id} (gen {program.generation}, "
+                                f"score {program.combined_score})"
+                            )
+                    else:
+                        # Default detection: compute all 3 metrics and cache
+                        parent_prog_for_novelty = None
+                        if job.parent_id:
+                            parent_prog_for_novelty = await self.async_db.get_async(
+                                job.parent_id
+                            )
 
-                    novelty_result = self.novelty_detector.detect(
-                        program=program,
-                        parent=parent_prog_for_novelty,
-                        inspirations=inspiration_programs,
-                    )
-
-                    if novelty_result.level != NoveltyLevel.NONE:
-                        program.novelty_level = novelty_result.level.value
-                        program.novelty_data = novelty_result.display_data or {}
+                        # Fetch previous embeddings in executor (DB access)
                         loop = asyncio.get_event_loop()
+                        code_embs, reasoning_embs = await loop.run_in_executor(
+                            None,
+                            self.db.get_all_embeddings_before,
+                            program.id,
+                        )
+
+                        metrics = self.novelty_detector.compute_all_metrics(
+                            program=program,
+                            parent=parent_prog_for_novelty,
+                            all_previous_code_embeddings=code_embs,
+                            all_previous_reasoning_embeddings=reasoning_embs,
+                        )
+
+                        # Cache the raw metrics
+                        await loop.run_in_executor(
+                            None,
+                            self.db.set_novelty_cache,
+                            program.id,
+                            metrics["score_change"],
+                            metrics["dissimilarity_code"],
+                            metrics["dissimilarity_reasoning"],
+                        )
+
+                        # Read novelty settings (if interactive DB is available)
+                        novelty_settings = None
+                        try:
+                            idb = self._get_interactive_db()
+                            if idb is not None:
+                                novelty_settings = idb.read_novelty_settings()
+                        except Exception:
+                            pass
+
+                        # Apply thresholds to determine novelty level
+                        novelty_level, novelty_data = self._apply_novelty_thresholds(
+                            metrics, novelty_settings
+                        )
+
+                        program.novelty_level = novelty_level
+                        program.novelty_data = novelty_data
                         await loop.run_in_executor(
                             None,
                             self._update_novelty_in_db,
                             program.id,
-                            novelty_result.level.value,
-                            novelty_result.display_data,
+                            novelty_level,
+                            novelty_data,
                         )
-                        logger.info(
-                            f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
-                            f"Program {program.id} (gen {program.generation}, "
-                            f"score {program.combined_score})"
-                        )
+                        if novelty_level != NoveltyLevel.NONE.value:
+                            logger.info(
+                                f"NOVELTY DETECTED [{novelty_level.upper()}]: "
+                                f"Program {program.id} (gen {program.generation}, "
+                                f"score {program.combined_score})"
+                            )
                 except Exception as e:
                     logger.warning(f"Novelty detection failed for {program.id}: {e}")
 

@@ -528,6 +528,17 @@ class ProgramDatabase:
             """
         )
 
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS novelty_cache (
+                program_id TEXT PRIMARY KEY,
+                score_change REAL,
+                dissimilarity_code REAL,
+                dissimilarity_reasoning REAL
+            )
+            """
+        )
+
         self.conn.commit()
 
         # Run any necessary migrations
@@ -1857,6 +1868,133 @@ class ProgramDatabase:
         programs = [self._program_from_row(row) for row in rows]
         # Filter out any None values that might result from row processing errors
         return [p for p in programs if p is not None]
+
+    # ---- Novelty cache helpers -------------------------------------------
+
+    @db_retry()
+    def get_novelty_cache(self, program_id: str) -> Optional[Dict[str, Any]]:
+        """Return cached novelty metrics for a program, or None if not cached."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        self.cursor.execute(
+            "SELECT score_change, dissimilarity_code, dissimilarity_reasoning "
+            "FROM novelty_cache WHERE program_id = ?",
+            (program_id,),
+        )
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "score_change": row["score_change"],
+            "dissimilarity_code": row["dissimilarity_code"],
+            "dissimilarity_reasoning": row["dissimilarity_reasoning"],
+        }
+
+    @db_retry()
+    def set_novelty_cache(
+        self,
+        program_id: str,
+        score_change: Optional[float],
+        dissimilarity_code: Optional[float],
+        dissimilarity_reasoning: Optional[float],
+    ) -> None:
+        """Upsert novelty metrics for a program."""
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+        self.cursor.execute(
+            "INSERT OR REPLACE INTO novelty_cache "
+            "(program_id, score_change, dissimilarity_code, dissimilarity_reasoning) "
+            "VALUES (?, ?, ?, ?)",
+            (program_id, score_change, dissimilarity_code, dissimilarity_reasoning),
+        )
+        self.conn.commit()
+
+    @db_retry()
+    def get_all_novelty_cache(self) -> Dict[str, Dict[str, Any]]:
+        """Return all cached novelty metrics keyed by program_id."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        self.cursor.execute(
+            "SELECT program_id, score_change, dissimilarity_code, dissimilarity_reasoning "
+            "FROM novelty_cache"
+        )
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in self.cursor.fetchall():
+            result[row["program_id"]] = {
+                "score_change": row["score_change"],
+                "dissimilarity_code": row["dissimilarity_code"],
+                "dissimilarity_reasoning": row["dissimilarity_reasoning"],
+            }
+        return result
+
+    @db_retry()
+    def batch_update_novelty_levels(
+        self, updates: List[Tuple[str, str, Dict[str, Any]]]
+    ) -> None:
+        """Batch-update novelty_level and novelty_data on the programs table.
+
+        Args:
+            updates: List of (program_id, level, data_dict) tuples.
+        """
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+        for program_id, level, data_dict in updates:
+            self.cursor.execute(
+                "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
+                (level, json.dumps(data_dict), program_id),
+            )
+        self.conn.commit()
+
+    @db_retry()
+    def get_all_embeddings_before(
+        self, program_id: str
+    ) -> Tuple[List[List[float]], List[List[float]]]:
+        """Return (code_embeddings, reasoning_embeddings) for all programs
+        created before the given program.
+
+        "Before" means lower generation, or same generation but earlier
+        timestamp.  Only non-empty embeddings are included.
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        # First fetch the reference program's generation and timestamp
+        self.cursor.execute(
+            "SELECT generation, timestamp FROM programs WHERE id = ?",
+            (program_id,),
+        )
+        ref = self.cursor.fetchone()
+        if ref is None:
+            return [], []
+
+        ref_gen = ref["generation"]
+        ref_ts = ref["timestamp"]
+
+        self.cursor.execute(
+            "SELECT embedding, reasoning_embedding FROM programs "
+            "WHERE (generation < ? OR (generation = ? AND timestamp < ?)) "
+            "AND id != ?",
+            (ref_gen, ref_gen, ref_ts, program_id),
+        )
+        code_embeddings: List[List[float]] = []
+        reasoning_embeddings: List[List[float]] = []
+        for row in self.cursor.fetchall():
+            emb_raw = row["embedding"]
+            if emb_raw:
+                try:
+                    emb = json.loads(emb_raw) if isinstance(emb_raw, str) else emb_raw
+                    if isinstance(emb, list) and len(emb) > 0:
+                        code_embeddings.append(emb)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            r_emb_raw = row["reasoning_embedding"]
+            if r_emb_raw:
+                try:
+                    r_emb = json.loads(r_emb_raw) if isinstance(r_emb_raw, str) else r_emb_raw
+                    if isinstance(r_emb, list) and len(r_emb) > 0:
+                        reasoning_embeddings.append(r_emb)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return code_embeddings, reasoning_embeddings
 
     @db_retry()
     def get_programs_summary(self) -> List[Dict[str, Any]]:

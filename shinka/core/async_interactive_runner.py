@@ -77,6 +77,12 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 return set()
         return set()
 
+    def _get_interactive_db(self):
+        """Return the InteractiveDatabase if available."""
+        if self.web_controller and self.web_controller.interactive_db:
+            return self.web_controller.interactive_db
+        return None
+
     # --------------------------------------------------------------------- #
     # Main run() override                                                    #
     # --------------------------------------------------------------------- #
