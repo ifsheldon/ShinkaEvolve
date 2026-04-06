@@ -458,7 +458,7 @@ def _create_evo_config() -> EvolutionConfig:
         init_program_path="initial.py",
         results_dir="results_sandbox",
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
-        novelty_function_path=novelty_path,  # mock novelty — randomly fires
+        # novelty_function_path=novelty_path,  # mock novelty — randomly fires
         # Push-based UI updates.  Auto-detected from EVOLVE_SHELL_URL env
         # var when launched via start.py --run, or set explicitly here.
         callback_url=os.environ.get("EVOLVE_SHELL_URL", "http://localhost:8000"),
