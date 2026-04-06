@@ -3995,6 +3995,11 @@ class ShinkaEvolveRunner:
 
                 # --- Post-evaluation novelty detection ---
                 try:
+                    logger.info(
+                        "Novelty detection: custom=%s for program %s",
+                        bool(self.novelty_detector._function_path),
+                        program.id[:8],
+                    )
                     if self.novelty_detector._function_path:
                         # Custom novelty function: keep existing behaviour
                         parent_prog_for_novelty = None
@@ -4096,7 +4101,10 @@ class ShinkaEvolveRunner:
                                 f"score {program.combined_score})"
                             )
                 except Exception as e:
-                    logger.warning(f"Novelty detection failed for {program.id}: {e}")
+                    logger.warning(
+                        "Novelty detection failed for %s: %s",
+                        program.id[:8], e, exc_info=True,
+                    )
 
             except asyncio.TimeoutError:
                 self._queue_failed_db_job(
