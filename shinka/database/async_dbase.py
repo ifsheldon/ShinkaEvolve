@@ -280,6 +280,7 @@ class AsyncProgramDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
+        excluded_ids: Optional[set] = None,
     ) -> Tuple[Program, List[Program], List[Program]]:
         """Async version of database sampling for parent and inspirations.
 
@@ -317,6 +318,7 @@ class AsyncProgramDatabase:
                             max_novelty_attempts=max_novelty_attempts,
                             resample_attempt=resample_attempt,
                             max_resample_attempts=max_resample_attempts,
+                            excluded_ids=excluded_ids,
                         )
                         self._debug_track_end(thread_op_id, success=True)
                         return result
@@ -349,6 +351,7 @@ class AsyncProgramDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
+        excluded_ids: Optional[set] = None,
     ) -> Tuple[Program, List[Program], List[Program], bool]:
         """Async version of database sampling with fix mode detection.
 
@@ -385,6 +388,7 @@ class AsyncProgramDatabase:
                             max_novelty_attempts=max_novelty_attempts,
                             resample_attempt=resample_attempt,
                             max_resample_attempts=max_resample_attempts,
+                            excluded_ids=excluded_ids,
                         )
                         self._debug_track_end(thread_op_id, success=True)
                         return result
@@ -928,7 +932,8 @@ class AsyncProgramDatabase:
             raise
 
     async def sample_inspirations_for_parent_async(
-        self, parent: Program, num_archive_insp: int, num_top_k_insp: int
+        self, parent: Program, num_archive_insp: int, num_top_k_insp: int,
+        excluded_ids: Optional[set] = None,
     ) -> Tuple[List[Program], List[Program]]:
         """Async version of sample_inspirations_for_parent for interactive operations."""
         op_id = self._debug_track_start(
@@ -946,7 +951,8 @@ class AsyncProgramDatabase:
                     thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                     try:
                         result = thread_db.sample_inspirations_for_parent(
-                            parent, num_archive_insp, num_top_k_insp
+                            parent, num_archive_insp, num_top_k_insp,
+                            excluded_ids=excluded_ids,
                         )
                         self._debug_track_end(thread_op_id, success=True)
                         return result

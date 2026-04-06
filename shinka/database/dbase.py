@@ -1312,6 +1312,7 @@ class ProgramDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
+        excluded_ids: Optional[set] = None,
     ) -> Tuple[Program, List[Program], List[Program]]:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
@@ -1369,7 +1370,19 @@ class ProgramDatabase:
             get_best_program_func=self.get_best_program,
         )
 
-        parent = parent_selector.sample_parent(island_idx=sampled_island)
+        _excluded = excluded_ids or set()
+
+        # Sample parent, retrying if the chosen parent is banned
+        parent = None
+        for _attempt in range(20):
+            candidate = parent_selector.sample_parent(island_idx=sampled_island)
+            if not candidate:
+                break
+            if candidate.id not in _excluded:
+                parent = candidate
+                break
+            logger.debug("Skipping banned parent %s, resampling...", candidate.id[:8])
+
         if not parent:
             raise RuntimeError(f"Failed to sample parent from island {sampled_island}")
 
@@ -1399,6 +1412,15 @@ class ProgramDatabase:
             parent, num_archive_insp, num_top_k_insp
         )
 
+        # Filter out banned programs from inspirations
+        if _excluded:
+            archive_inspirations = [
+                p for p in archive_inspirations if p.id not in _excluded
+            ]
+            top_k_inspirations = [
+                p for p in top_k_inspirations if p.id not in _excluded
+            ]
+
         logger.debug(
             f"Sampled parent {parent.id} from island {sampled_island}, "
             f"{len(archive_inspirations)} archive inspirations, "
@@ -1424,6 +1446,7 @@ class ProgramDatabase:
         parent: Program,
         num_archive_insp: int,
         num_top_k_insp: int,
+        excluded_ids: Optional[set] = None,
     ) -> Tuple[List[Program], List[Program]]:
         """Sample inspirations for a specific parent program.
 
@@ -1444,7 +1467,15 @@ class ProgramDatabase:
             ),
             program_from_row_func=self._program_from_row,
         )
-        return context_selector.sample_context(parent, num_archive_insp, num_top_k_insp)
+        archive_insps, top_k_insps = context_selector.sample_context(
+            parent, num_archive_insp, num_top_k_insp
+        )
+
+        if excluded_ids:
+            archive_insps = [p for p in archive_insps if p.id not in excluded_ids]
+            top_k_insps = [p for p in top_k_insps if p.id not in excluded_ids]
+
+        return archive_insps, top_k_insps
 
     @db_retry()
     def sample_with_fix_mode(
@@ -1454,6 +1485,7 @@ class ProgramDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
+        excluded_ids: Optional[set] = None,
     ) -> Tuple[Program, List[Program], List[Program], bool]:
         """
         Sample a parent program, returning fix mode indicator if no correct
@@ -1582,10 +1614,21 @@ class ProgramDatabase:
             get_best_program_func=self.get_best_program,
         )
 
-        # Use the new method that returns fix mode
-        parent, needs_fix = parent_selector.sample_parent_with_fix_mode(
-            island_idx=sampled_island
-        )
+        _excluded = excluded_ids or set()
+
+        # Sample parent, retrying if the chosen parent is banned
+        parent, needs_fix = None, False
+        for _attempt in range(20):
+            candidate, fix = parent_selector.sample_parent_with_fix_mode(
+                island_idx=sampled_island
+            )
+            if not candidate:
+                break
+            if candidate.id not in _excluded:
+                parent, needs_fix = candidate, fix
+                break
+            logger.debug("Skipping banned parent %s, resampling...", candidate.id[:8])
+
         if not parent:
             raise RuntimeError(f"Failed to sample parent from island {sampled_island}")
 
@@ -1632,6 +1675,15 @@ class ProgramDatabase:
         archive_inspirations, top_k_inspirations = context_selector.sample_context(
             parent, num_archive_insp, num_top_k_insp
         )
+
+        # Filter out banned programs from inspirations
+        if _excluded:
+            archive_inspirations = [
+                p for p in archive_inspirations if p.id not in _excluded
+            ]
+            top_k_inspirations = [
+                p for p in top_k_inspirations if p.id not in _excluded
+            ]
 
         logger.debug(
             f"Sampled parent {parent.id} from island {sampled_island}, "

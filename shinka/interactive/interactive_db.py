@@ -208,6 +208,11 @@ class InteractiveDatabase:
                     value TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS banned_programs (
+                    program_id TEXT PRIMARY KEY,
+                    banned_at REAL NOT NULL
+                );
                 """
             )
             conn.commit()
@@ -411,5 +416,41 @@ class InteractiveDatabase:
             if not row:
                 return None
             return float(row["updated_at"])
+        finally:
+            conn.close()
+
+    # ---- Banned programs: written by backend, read by runner ---------------
+
+    def ban_program(self, program_id: str) -> None:
+        """Mark a program as banned."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO banned_programs (program_id, banned_at) "
+                "VALUES (?, ?)",
+                (program_id, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def unban_program(self, program_id: str) -> None:
+        """Remove the ban from a program."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "DELETE FROM banned_programs WHERE program_id = ?",
+                (program_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_banned_ids(self) -> set[str]:
+        """Return the set of all currently banned program IDs."""
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT program_id FROM banned_programs").fetchall()
+            return {r["program_id"] for r in rows}
         finally:
             conn.close()

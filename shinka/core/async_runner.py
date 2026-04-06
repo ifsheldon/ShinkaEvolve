@@ -2613,6 +2613,7 @@ class ShinkaEvolveRunner:
                         max_novelty_attempts=self.evo_config.max_novelty_attempts,
                         resample_attempt=resample + 1,
                         max_resample_attempts=self.evo_config.max_patch_resamples,
+                        excluded_ids=self._get_banned_ids(),
                     )
 
                     # Sync beam_search parent to main database if using beam_search strategy
@@ -3200,6 +3201,14 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
             return None, {"api_costs": 0.0, "error_attempt": str(e)}, False
+
+    def _get_banned_ids(self) -> set:
+        """Return program IDs that should be excluded from sampling.
+
+        The base runner returns an empty set. The interactive runner
+        overrides this to read banned IDs from the interactive database.
+        """
+        return set()
 
     async def _get_reasoning_embedding_async(
         self, metadata: dict

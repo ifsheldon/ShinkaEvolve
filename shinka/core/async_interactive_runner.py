@@ -68,6 +68,15 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
         # Whether this is a resumed run (set in run() after setup).
         self._is_resuming = False
 
+    def _get_banned_ids(self) -> set:
+        """Return banned program IDs from the interactive database."""
+        if self.web_controller and self.web_controller.interactive_db:
+            try:
+                return self.web_controller.interactive_db.get_banned_ids()
+            except Exception:
+                return set()
+        return set()
+
     # --------------------------------------------------------------------- #
     # Main run() override                                                    #
     # --------------------------------------------------------------------- #
@@ -494,6 +503,7 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 parent_program,
                 self.db_config.num_archive_inspirations,
                 self.db_config.num_top_k_inspirations,
+                excluded_ids=self._get_banned_ids(),
             )
 
         elif action_type == "merge":
