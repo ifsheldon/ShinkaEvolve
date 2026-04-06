@@ -3268,10 +3268,14 @@ class ShinkaEvolveRunner:
             ds_high = settings.get("dissimilarity_high", ds_high)
             ds_embedding = settings.get("dissimilarity_embedding", ds_embedding)
 
-        display: Dict[str, Any] = {k: v for k, v in metrics.items()}
-
         if mode == "score_change":
             val = metrics.get("score_change")
+            display: Dict[str, Any] = {
+                "mode": "score_change",
+                "gain_pct": round(val * 100, 2) if val is not None else None,
+                "parent_score": metrics.get("parent_score"),
+                "program_score": metrics.get("program_score"),
+            }
             if val is None:
                 return NoveltyLevel.NONE.value, display
             if val >= sc_high:
@@ -3289,13 +3293,18 @@ class ShinkaEvolveRunner:
                 else "dissimilarity_reasoning"
             )
             val = metrics.get(key)
+            display = {
+                "mode": "dissimilarity",
+                "embedding_source": ds_embedding,
+                "dissimilarity": round(val, 4) if val is not None else None,
+            }
             if val is None:
                 return NoveltyLevel.NONE.value, display
             if val >= ds_high:
-                display["reason"] = f"dissimilarity {val:.3f} (>={ds_high})"
+                display["reason"] = f"Min {ds_embedding} dissimilarity {val:.3f} (>={ds_high})"
                 return NoveltyLevel.HIGH.value, display
             if val >= ds_moderate:
-                display["reason"] = f"dissimilarity {val:.3f} (>={ds_moderate})"
+                display["reason"] = f"Min {ds_embedding} dissimilarity {val:.3f} (>={ds_moderate})"
                 return NoveltyLevel.MODERATE.value, display
             return NoveltyLevel.NONE.value, display
 
@@ -4086,6 +4095,13 @@ class ShinkaEvolveRunner:
                                 novelty_settings = idb.read_novelty_settings()
                         except Exception:
                             pass
+
+                        # Add score context for display
+                        metrics["program_score"] = round(program.combined_score, 4)
+                        if parent_prog_for_novelty:
+                            metrics["parent_score"] = round(
+                                parent_prog_for_novelty.combined_score, 4
+                            )
 
                         # Apply thresholds to determine novelty level
                         novelty_level, novelty_data = self._apply_novelty_thresholds(
