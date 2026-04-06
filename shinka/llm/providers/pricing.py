@@ -179,6 +179,16 @@ def get_provider(model_name: str) -> Optional[str]:
     return str(_get_model_row(model_name)["provider"])
 
 
+def get_all_providers() -> list[str]:
+    """Get the distinct providers represented in pricing data."""
+    return _PRICING_DF["provider"].drop_duplicates().tolist()
+
+
+def get_models_by_provider(provider: str) -> list[str]:
+    """Get list of models for a given provider."""
+    return _PRICING_DF[_PRICING_DF["provider"] == provider].index.tolist()
+
+
 def has_fixed_temperature(model_name: str) -> bool:
     """Check if a model requires temperature fixed to 1.0."""
     if model_name not in _PRICING_DF.index:

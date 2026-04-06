@@ -53,6 +53,7 @@ def test_project_metadata_targets_pypi_release():
     assert project["license"] == "Apache-2.0"
     assert project["scripts"] == {
         "shinka_launch": "shinka.cli.launch:main",
+        "shinka_models": "shinka.cli.models:main",
         "shinka_run": "shinka.cli.run:main",
         "shinka_visualize": "shinka.webui.visualization:main",
     }
@@ -87,7 +88,7 @@ def test_readme_documents_package_install():
 def test_changelog_tracks_current_package_version():
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert shinka.__version__ == "0.0.3"
+    assert shinka.__version__ == "0.0.4"
     assert "# Changelog" in changelog
     assert f"## {shinka.__version__} -" in changelog
 

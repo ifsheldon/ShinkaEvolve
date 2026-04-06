@@ -2,6 +2,27 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## 0.0.4 - 2026-04-06
+
+### Added
+
+- Added a new `shinka_models` CLI that inspects the current environment plus discovered `.env` files and reports which priced LLM and embedding models are available to use.
+- Added per-model `api_key_env` support for local OpenAI-compatible LLM and embedding backends, allowing credentials to be selected inline via `local/<model>@http(s)://...?...api_key_env=ENV_VAR`.
+
+### Changed
+
+- Changed `shinka_models` default output to a compact JSON object with separate `embedding` and `llm` model lists, while `--verbose` now emits provider-level availability details with the same top-level lists.
+- Updated the `shinka-run` skill so run planning must validate mutation, meta-recommendation, prompt-evolution, and embedding models against `shinka_models` before launching evolution.
+- Improved local async runtime scaling by launching evaluation subprocesses with the active project interpreter, capping per-process numeric-library thread fan-out, and reducing local monitor polling latency.
+- Moved prompt-fitness percentile recomputation off the prompt side-effect hot path and onto a debounced background task using fresh read-only database connections.
+- Updated the circle-packing scaling presets to run for `100` generations and reduced `max_patch_resamples` to `1` for the small / medium / large benchmark configs.
+
+### Fixed
+
+- Fixed adaptive proposal targeting so invalid `proposal_target_hard_cap` values below evaluation capacity no longer silently disable oversubscription.
+- Fixed prompt-percentile background refresh to avoid SQLite thread-affinity failures when recomputing prompt fitness during async runs.
+- Fixed Windows Unicode handling for async candidate-file I/O, diff summaries, and best-path exports by forcing UTF-8 reads and writes on LLM-generated artifacts.
+
 ## 0.0.3 - 2026-04-04
 
 ### Added
