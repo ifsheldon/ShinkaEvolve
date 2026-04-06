@@ -4046,29 +4046,36 @@ class ShinkaEvolveRunner:
                                 job.parent_id
                             )
 
-                        # Fetch previous embeddings in executor (DB access)
+                        # Fetch previous embeddings and cache metrics using a
+                        # thread-local DB connection (self.db is bound to the
+                        # main thread and cannot be used from an executor).
                         loop = asyncio.get_event_loop()
-                        code_embs, reasoning_embs = await loop.run_in_executor(
-                            None,
-                            self.db.get_all_embeddings_before,
-                            program.id,
-                        )
 
-                        metrics = self.novelty_detector.compute_all_metrics(
-                            program=program,
-                            parent=parent_prog_for_novelty,
-                            all_previous_code_embeddings=code_embs,
-                            all_previous_reasoning_embeddings=reasoning_embs,
-                        )
+                        def _compute_and_cache_novelty():
+                            from shinka.database.dbase import ProgramDatabase
+                            thread_db = ProgramDatabase(self.db.config, read_only=False)
+                            try:
+                                code_embs, reasoning_embs = (
+                                    thread_db.get_all_embeddings_before(program.id)
+                                )
+                                metrics = self.novelty_detector.compute_all_metrics(
+                                    program=program,
+                                    parent=parent_prog_for_novelty,
+                                    all_previous_code_embeddings=code_embs,
+                                    all_previous_reasoning_embeddings=reasoning_embs,
+                                )
+                                thread_db.set_novelty_cache(
+                                    program.id,
+                                    metrics["score_change"],
+                                    metrics["dissimilarity_code"],
+                                    metrics["dissimilarity_reasoning"],
+                                )
+                                return metrics
+                            finally:
+                                thread_db.close()
 
-                        # Cache the raw metrics
-                        await loop.run_in_executor(
-                            None,
-                            self.db.set_novelty_cache,
-                            program.id,
-                            metrics["score_change"],
-                            metrics["dissimilarity_code"],
-                            metrics["dissimilarity_reasoning"],
+                        metrics = await loop.run_in_executor(
+                            None, _compute_and_cache_novelty
                         )
 
                         # Read novelty settings (if interactive DB is available)
