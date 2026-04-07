@@ -2086,7 +2086,16 @@ class ShinkaEvolveRunner:
                             f"gens {job_gens}{cost_info}"
                         )
 
-                    self._mark_surplus_completed_jobs_for_discard(completed_jobs)
+                    # In interactive keep-alive mode every job is an
+                    # expert-driven suggest/merge submitted past the
+                    # original target — we want them persisted, not
+                    # marked for discard.
+                    if not getattr(
+                        self, "_interactive_keepalive_active", False
+                    ):
+                        self._mark_surplus_completed_jobs_for_discard(
+                            completed_jobs
+                        )
                     await self._mark_completed_jobs_detected(completed_jobs)
                     self._schedule_completed_jobs_for_processing(completed_jobs)
 
@@ -2096,8 +2105,16 @@ class ShinkaEvolveRunner:
                     # Signal that slots are available
                     self.slot_available.set()
 
-                # Retry any failed DB jobs
-                if self.completed_generations >= self.evo_config.num_generations:
+                # Cancel any in-flight work that's surplus relative to the
+                # target. Skipped during interactive keep-alive: there the
+                # only in-flight work is interactive suggest/merge, which
+                # must NOT be cancelled.
+                if (
+                    self.completed_generations >= self.evo_config.num_generations
+                    and not getattr(
+                        self, "_interactive_keepalive_active", False
+                    )
+                ):
                     await self._cancel_surplus_inflight_work()
 
                 if self.failed_jobs_for_retry:
@@ -2202,12 +2219,19 @@ class ShinkaEvolveRunner:
                             await asyncio.sleep(0.1)
                             continue
 
-                # Check if we should stop
+                # Check if we should stop. The interactive runner sets
+                # ``_interactive_keepalive_active`` while it is parked in the
+                # post-target keep-alive loop; in that mode the monitor must
+                # NOT auto-stop on the at-target condition (otherwise it
+                # would tear keep-alive down on its first tick). The
+                # interactive command task is the sole owner of should_stop
+                # while keep-alive is active.
                 if (
                     self.completed_generations >= self.evo_config.num_generations
                     and len(self.running_jobs) == 0
                     and len(self.active_proposal_tasks) == 0
                     and not self._has_persistence_work_in_progress()
+                    and not getattr(self, "_interactive_keepalive_active", False)
                 ):
                     # Final retry attempt for any remaining failed jobs
                     # before shutdown

@@ -68,6 +68,12 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
         # Whether this is a resumed run (set in run() after setup).
         self._is_resuming = False
 
+        # Set while the runner is inside _interactive_keepalive_loop_async.
+        # When True, _job_monitor_task must NOT auto-stop on at-target
+        # (otherwise the keep-alive tears itself down immediately when
+        # completed_generations >= num_generations — see async_runner.py).
+        self._interactive_keepalive_active = False
+
     def _get_banned_ids(self) -> set:
         """Return banned program IDs from the interactive database."""
         if self.web_controller and self.web_controller.interactive_db:
@@ -899,6 +905,11 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
         self.should_stop.clear()
         self.finalization_complete.clear()
         self._interactive_stop_requested = False
+        # Mark keep-alive active so the (re-spawned) job monitor does not
+        # auto-stop on the at-target condition. Without this flag the
+        # monitor would set should_stop on its first tick and the
+        # keep-alive loop would exit immediately, killing the runner.
+        self._interactive_keepalive_active = True
         should_reenter = False
 
         cmd_task = asyncio.create_task(
@@ -943,6 +954,7 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
         except asyncio.CancelledError:
             logger.info("Interactive keep-alive cancelled")
         finally:
+            self._interactive_keepalive_active = False
             cmd_task.cancel()
             monitor_task.cancel()
             try:
