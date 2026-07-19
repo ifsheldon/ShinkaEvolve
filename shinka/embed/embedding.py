@@ -4,6 +4,7 @@ from typing import Union, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from shinka.google_genai import google_genai_auth_mode
 from .client import (
     get_async_client_embed,
     get_client_embed,
@@ -25,7 +26,9 @@ def _get_google_embeddings_and_cost(
     """Embed texts with Gemini and bill using Gemini token counts when available."""
     embeddings = []
     total_tokens = 0
-    model = f"models/{model_name}"
+    model = (
+        model_name if google_genai_auth_mode() == "vertexai" else f"models/{model_name}"
+    )
     price_per_token = get_model_price(model_name)
 
     for text in texts:
@@ -419,14 +422,11 @@ class AsyncEmbeddingClient:
             import asyncio
 
             try:
-                loop = asyncio.get_event_loop()
-                embeddings, cost = await loop.run_in_executor(
-                    None,
-                    lambda: _get_google_embeddings_and_cost(
-                        client=self.async_client,
-                        model_name=self.model,
-                        texts=code,
-                    ),
+                embeddings, cost = await asyncio.to_thread(
+                    _get_google_embeddings_and_cost,
+                    client=self.async_client,
+                    model_name=self.model,
+                    texts=code,
                 )
                 if single_code:
                     return embeddings[0] if embeddings else [], cost

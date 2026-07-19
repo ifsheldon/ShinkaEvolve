@@ -276,6 +276,23 @@
         .analysis-section.full-width {
             grid-column: span 2;
         }
+
+        #throughput-eval-distribution-plot,
+        #throughput-completion-rate-plot {
+            min-width: 0;
+            max-width: 100%;
+        }
+
+        #throughput-eval-distribution-plot .js-plotly-plot,
+        #throughput-eval-distribution-plot .plot-container,
+        #throughput-eval-distribution-plot .svg-container,
+        #throughput-completion-rate-plot .js-plotly-plot,
+        #throughput-completion-rate-plot .plot-container,
+        #throughput-completion-rate-plot .svg-container {
+            width: 100% !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+        }
         
         /* Highlight Python code tabs */
         #agent-code, #solution-code {
@@ -538,6 +555,8 @@
         
         #tree {
             margin-top: 10px;
+            width: 100%;
+            min-width: 0;
         }
         
         #file-list-container {
@@ -1208,6 +1227,7 @@
         .left-content-section.active {
             display: block;
             height: 100%;
+            min-width: 0;
         }
         
         /* Meta-prompt view uses absolute positioning to fill parent when active */
@@ -1589,6 +1609,7 @@
                                     <th class="sortable" data-sort="rank">R<span class="sort-arrow"></span></th>
                                     <th class="sortable" data-sort="generation">G<span class="sort-arrow"></span></th>
                                     <th class="sortable" data-sort="archive">A<span class="sort-arrow"></span></th>
+                                    <th>Status</th>
                                     <th>Patch Name</th>
                                     <th>Type</th>
                                     <th class="sortable" data-sort="island_idx">I<span class="sort-arrow"></span></th>
@@ -1822,14 +1843,14 @@
             <div id="tabs">
                 <div class="tab active" data-tab="agent-info">Meta</div>
                 <div class="tab" data-tab="pareto-front">Pareto</div>
-                <div class="tab" data-tab="meta-analysis">Scratchpad</div>
+                <div class="tab" data-tab="meta-analysis">Scratch</div>
                 <div class="tab" data-tab="node-details">Node</div>
                 <div class="tab" data-tab="agent-code">Code</div>
                 <div class="tab" data-tab="code-diff">Diff</div>
-                <div class="tab" data-tab="log-output">Evaluation</div>
+                <div class="tab" data-tab="log-output">Eval</div>
                 <div class="tab" data-tab="llm-result">LLM</div>
                 <div class="tab" data-tab="analysis">Analysis</div>
-                <div class="tab" data-tab="throughput">Throughput</div>
+                <div class="tab" data-tab="throughput">Usage</div>
             </div>
             <div id="tab-content">
                 <div id="agent-info" class="content-section active">
@@ -2001,9 +2022,20 @@
                             <div id="throughput-summary"></div>
                         </div>
                         <div class="analysis-section full-width">
-                            <h3>Generation Runtime Timeline</h3>
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px;">
+                                <h3 style="margin-bottom: 0;">Generation Runtime Timeline</h3>
+                                <button
+                                    id="throughput-runtime-toggle"
+                                    onclick="toggleThroughputRuntimePlot()"
+                                    style="padding: 5px 10px; font-size: 12px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa; cursor: pointer;"
+                                >
+                                    Hide Plot
+                                </button>
+                            </div>
                             <div id="throughput-runtime-summary" style="display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: #666; margin: 6px 0 10px 0;"></div>
-                            <div id="throughput-runtime-plot" style="width: 100%; height: 420px; overflow: hidden;"></div>
+                            <div id="throughput-runtime-plot-wrapper">
+                                <div id="throughput-runtime-plot" style="width: 100%; overflow: hidden;"></div>
+                            </div>
                         </div>
                         <div class="analysis-section full-width">
                             <h3>Worker Occupancy Over Time</h3>
@@ -2014,14 +2046,14 @@
                             <div id="throughput-occupancy-percent-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
                         </div>
                         <div class="analysis-section full-width">
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                <div>
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 10px; min-width: 0;">
+                                <div style="min-width: 0; overflow: hidden;">
                                     <h3>Evaluation Occupancy Distribution</h3>
-                                    <div id="throughput-eval-distribution-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                                    <div id="throughput-eval-distribution-plot" style="width: 100%; max-width: 100%; height: 240px; overflow: hidden;"></div>
                                 </div>
-                                <div>
+                                <div style="min-width: 0; overflow: hidden;">
                                     <h3>Completed Evaluations per Minute</h3>
-                                    <div id="throughput-completion-rate-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                                    <div id="throughput-completion-rate-plot" style="width: 100%; max-width: 100%; height: 240px; overflow: hidden;"></div>
                                 </div>
                             </div>
                         </div>
@@ -2230,7 +2262,8 @@
                                         'python': 'py',
                                         'cpp': 'cpp',
                                         'javascript': 'js',
-                                        'cuda': 'cu'
+                                        'cuda': 'cu',
+                                        'fortran': 'f90'
                                     }[language] || language;
 
                                     a.download = `${agentName}_gen${gen}.${extension}`;
@@ -2251,43 +2284,51 @@
 
                 // Initialize the score type radio buttons
                 initializeScoreTypeListeners();
+
+                function activateRightTab(tabId) {
+                    const tabElement = document.querySelector(`.tab[data-tab="${tabId}"]`);
+                    const sectionElement = document.getElementById(tabId);
+                    if (!tabElement || !sectionElement) {
+                        return;
+                    }
+
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    tabElement.classList.add('active');
+
+                    document.querySelectorAll('.content-section').forEach(section => {
+                        section.classList.remove('active');
+                    });
+                    sectionElement.classList.add('active');
+
+                    saveState();
+
+                    if (tabId === 'agent-info' && !window.isResizing) {
+                        console.log("[DEBUG] Switching to Meta Info tab, redrawing charts");
+                        setTimeout(() => {
+                            createCharts(null);
+                        }, 100);
+                    }
+                    if (tabId === 'pareto-front') {
+                        updateParetoView();
+                    }
+                    if (tabId === 'analysis') {
+                        setTimeout(() => {
+                            updateAnalysisTab(window.selectedNodeId || null);
+                        }, 100);
+                    }
+                    if (tabId === 'throughput') {
+                        setTimeout(() => {
+                            updateThroughputTab(window.selectedNodeId || null);
+                        }, 100);
+                    }
+                }
+
+                window.activateRightTab = activateRightTab;
                 
                 // Add tab handling with state persistence
                 document.querySelectorAll('.tab').forEach(tab => {
                     tab.addEventListener('click', function() {
-                        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                        this.classList.add('active');
-                        
-                        const tabId = this.getAttribute('data-tab');
-                        document.querySelectorAll('.content-section').forEach(section => {
-                            section.classList.remove('active');
-                        });
-                        document.getElementById(tabId).classList.add('active');
-                        
-                        // Save state and update URL
-                        saveState();
-                        
-                        // Redraw charts if we're switching to the agent-info tab
-                        if (tabId === 'agent-info' && !window.isResizing) {
-                            console.log("[DEBUG] Switching to Meta Info tab, redrawing charts");
-                            // Small delay to ensure the tab is visible before redrawing charts
-                            setTimeout(() => {
-                                createCharts(null);
-                            }, 100);
-                        }
-                        if (tabId === 'pareto-front') {
-                            updateParetoView();
-                        }
-                        if (tabId === 'analysis') {
-                            setTimeout(() => {
-                                updateAnalysisTab(window.selectedNodeId || null);
-                            }, 100);
-                        }
-                        if (tabId === 'throughput') {
-                            setTimeout(() => {
-                                updateThroughputTab(window.selectedNodeId || null);
-                            }, 100);
-                        }
+                        activateRightTab(this.getAttribute('data-tab'));
                     });
                 });
                 
@@ -3231,13 +3272,13 @@ ${'='.repeat(80)}
                 savePreferences();
                 
                 // Update the tree without complete redraw
-                if (window.currentTreeRoot) {
+                if (window.treeData) {
                     // Use requestAnimationFrame for smoother updates
                     if (window.treeUpdateRAF) {
                         cancelAnimationFrame(window.treeUpdateRAF);
                     }
                     window.treeUpdateRAF = requestAnimationFrame(function() {
-                        renderTree(window.currentTreeRoot, true); // true = reuse existing elements
+                        renderGraph(window.treeData, true);
                     });
                 }
             });
@@ -3249,8 +3290,8 @@ ${'='.repeat(80)}
                     divider.classList.remove('dragging');
                     
                     // Final update with reuse to ensure everything is correctly positioned
-                    if (window.currentTreeRoot) {
-                        renderTree(window.currentTreeRoot, true);
+                    if (window.treeData) {
+                        renderGraph(window.treeData, true);
                     }
                     
                     // Delay resetting the resize flag to prevent immediate refreshes
@@ -4011,11 +4052,13 @@ ${'='.repeat(80)}
                 updateMetaInfoTab(data);
                 updateParetoView();
                 
-                // Restore the right-side tab state instead of hardcoded click
-                if (activeRightTabId && document.querySelector(`.tab[data-tab="${activeRightTabId}"]`)) {
-                    document.querySelector(`.tab[data-tab="${activeRightTabId}"]`).click();
+                // Prefer the URL-selected right tab on initial hydration.
+                const urlRightTabId = new URLSearchParams(window.location.search).get('right_tab');
+                const rightTabIdToActivate = urlRightTabId || activeRightTabId || 'agent-info';
+                if (rightTabIdToActivate && document.querySelector(`.tab[data-tab="${rightTabIdToActivate}"]`)) {
+                    window.activateRightTab?.(rightTabIdToActivate);
                 } else {
-                    document.querySelector('.tab[data-tab="agent-info"]').click();
+                    window.activateRightTab?.('agent-info');
                 }
                 
                 updateScoreHeatbar();
@@ -4083,11 +4126,9 @@ ${'='.repeat(80)}
                         updateAnalysisTab(window.selectedNodeId || null);
                     }, 200);
                 }
-                if (document.getElementById('throughput') && document.getElementById('throughput').classList.contains('active')) {
-                    setTimeout(() => {
-                        updateThroughputTab(window.selectedNodeId || null);
-                    }, 200);
-                }
+                setTimeout(() => {
+                    updateThroughputTab(window.selectedNodeId || null);
+                }, 200);
             } catch (error) {
 console.error("[DEBUG] Error in processData:", error);
             }
@@ -4102,6 +4143,30 @@ console.error("[DEBUG] Error in processData:", error);
             const maxGen = Math.max(...data.map(d => d.generation || 0));
             const maxTs = Math.max(...data.map(d => d.timestamp || 0));
             return `${count}-${maxGen}-${maxTs}`;
+        }
+
+        function normalizeTreeRoots(nodes) {
+            const hierarchyData = JSON.parse(JSON.stringify(nodes));
+            const nodeMap = new Map(nodes.map(node => [node.id, node]));
+            const rootNodes = hierarchyData.filter(node => !node.parent_id || !nodeMap.has(node.parent_id));
+
+            if (rootNodes.length <= 1) {
+                return hierarchyData;
+            }
+
+            const virtualRootId = '___virtual_root___';
+            hierarchyData.push({
+                id: virtualRootId,
+                parent_id: null,
+                agent_name: 'VIRTUAL ROOT',
+                isVirtual: true,
+                generation: -1,
+            });
+            rootNodes.forEach(rootNode => {
+                rootNode.parent_id = virtualRootId;
+            });
+
+            return hierarchyData;
         }
         
         function renderGraph(data, forceRender = false) {
@@ -4184,20 +4249,7 @@ console.error("[DEBUG] Error in processData:", error);
                 }
                 
                 const nodes = processedData.map(d => ({...d, agent_name: d.metadata.patch_name || d.agent_name || "unnamed_agent"}));
-                const nodeMap = new Map(nodes.map(node => [node.id, node]));
-
-                let hierarchyData = JSON.parse(JSON.stringify(nodes));
-                const rootNodes = hierarchyData.filter(n => !n.parent_id || !nodeMap.has(n.parent_id));
-                const virtualRootId = '___virtual_root___';
-
-                // Only create virtual root if we have multiple roots AND we don't have a unified root
-                const hasUnifiedRoot = rootNodes.some(n => n.isUnifiedRoot);
-                if (rootNodes.length > 1 && !hasUnifiedRoot) {
-                    hierarchyData.push({ id: virtualRootId, parent_id: '', agent_name: 'VIRTUAL ROOT', isVirtual: true, generation: -1 });
-                    rootNodes.forEach(rn => {
-                        rn.parent_id = virtualRootId;
-                    });
-                }
+                const hierarchyData = normalizeTreeRoots(nodes);
                 
                 const root = d3.stratify()
                     .id(d => d.id)
@@ -4278,11 +4330,15 @@ console.error("[DEBUG] Error in processData:", error);
                     console.log("[DEBUG] Sample correct nodes:", correctValidNodes.slice(0, 3).map(d => ({id: d.id.substring(0, 8), correct: d.correct, score: d.combined_score})));
                 }
                 
-                // Fallback to all valid nodes if no correct nodes exist
+                // Fallback to evaluated incorrect nodes before using failed proposals
                 let scoringNodes = correctValidNodes;
                 if (correctValidNodes.length === 0) {
-                    console.warn("[DEBUG] No correct nodes found for scoring, falling back to all valid nodes");
-                    scoringNodes = allValidNodes;
+                    console.warn("[DEBUG] No correct nodes found for scoring, falling back to non-failed valid nodes");
+                    scoringNodes = allValidNodes.filter(d => !isFailedProposalNode(d));
+                    if (scoringNodes.length === 0) {
+                        console.warn("[DEBUG] No evaluated nodes found for scoring, falling back to all valid nodes");
+                        scoringNodes = allValidNodes;
+                    }
                     if (scoringNodes.length === 0) {
                         console.warn("[DEBUG] No valid nodes found for scoring");
                         window.allBestPaths = [];
@@ -4666,6 +4722,9 @@ console.error("[DEBUG] Error in processData:", error);
                                         return '#ff8c00'; // Always orange for single path
                                     }
                                 }
+                                if (isFailedProposalNode(n.data)) {
+                                    return '#c0392b';
+                                }
                                 return "#000"; // Default stroke
                             })
                             .style("stroke-width", n => {
@@ -4715,6 +4774,14 @@ console.error("[DEBUG] Error in processData:", error);
                                 <em>Common origin for all islands</em>
                             `);
                         } else {
+                            if (isFailedProposalNode(d.data)) {
+                                tooltip.html(`
+                                    <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                                    <strong>Status:</strong> Failed Proposal<br>
+                                    <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
+                                    <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
+                                `);
+                            } else {
                             tooltip.html(`
                                 <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
                                 <strong>Score:</strong> ${score}<br>
@@ -4722,6 +4789,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 <strong>Island:</strong> ${islandIdx}<br>
                                 <strong>Model:</strong> ${modelName}
                             `);
+                            }
                         }
                         
                         tooltip.style("left", (event.pageX + 15) + "px")
@@ -4749,6 +4817,7 @@ console.error("[DEBUG] Error in processData:", error);
                     .style("fill", d => {
                         if (d.data.isUnifiedRoot) return '#9b59b6'; // Purple for unified root
                         if (d.data.id === window.bestNodeId) return '#ffd700';
+                        if (isFailedProposalNode(d.data)) return '#ffb3b3';
                         if (!d.data.correct) return '#e74c3c';
                         const score = d.data.combined_score;
                         if (score !== null && !isNaN(score)) {
@@ -4772,6 +4841,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 }
                             }
                         }
+                        if (isFailedProposalNode(d.data)) return '#c0392b';
                         return "#000"; // Default stroke
                     })
                     .style("stroke-width", d => {
@@ -4785,6 +4855,7 @@ console.error("[DEBUG] Error in processData:", error);
                         }
                         return 3; // Default width
                     })
+                    .style("stroke-dasharray", d => isFailedProposalNode(d.data) ? "6,3" : null)
                     .style("filter", d => d.data.id === window.bestNodeId ? "drop-shadow(0px 3px 6px rgba(255, 140, 0, 0.5))" : "drop-shadow(0px 2px 4px rgba(0,0,0,0.2))");
 
                 // Add animated rings for the SINGLE best node
@@ -5096,11 +5167,26 @@ console.error("[DEBUG] Error in processData:", error);
         let scoreBudgetChartInstance = null;
         let scoreRuntimeChartInstance = null;
         let runtimeChartInstance = null;
+
+        function getCurrentResultsDir() {
+            if (!window.currentDbPath) {
+                return null;
+            }
+
+            const normalizedPath = String(window.currentDbPath).replace(/\\/g, '/');
+            const lastSlash = normalizedPath.lastIndexOf('/');
+            if (lastSlash === -1) {
+                return normalizedPath;
+            }
+            return normalizedPath.slice(0, lastSlash);
+        }
         
         // Initialize the Meta Info tab with default content
         function initializeMetaInfoTab() {
+            const resultsDir = getCurrentResultsDir();
+            const metaTitle = resultsDir ? `Info: <code>${escapeHtml(resultsDir)}</code>` : 'Info';
             document.getElementById("agent-info").innerHTML = `
-                <h3>Meta Information</h3>
+                <h3 id="meta-info-title">${metaTitle}</h3>
                 <p id="meta-placeholder" class="placeholder-text">Loading data... Select a CSV file to visualize metrics.</p>
                 
                 <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px;">
@@ -5208,6 +5294,12 @@ console.error("[DEBUG] Error in processData:", error);
 
             // First, ensure the tab is set up with the correct HTML structure
             initializeMetaInfoTab();
+
+            const metaTitle = document.getElementById('meta-info-title');
+            const resultsDir = getCurrentResultsDir();
+            if (metaTitle) {
+                metaTitle.innerHTML = resultsDir ? `Info: <code>${escapeHtml(resultsDir)}</code>` : 'Info';
+            }
 
             // Ensure metric arrays are initialized for this update cycle
             cumulativeMaxScores = [];
@@ -5703,6 +5795,8 @@ console.error("[DEBUG] Error in processData:", error);
                 analysisMetricsHtml = '<p>No analysis metrics.</p>';
             }
 
+            const failureSummaryHtml = buildFailureSummaryHtml(data);
+
             let gridItemsHtml = `
                     <div class="details-section">
                         <h5>General</h5>
@@ -5713,6 +5807,7 @@ console.error("[DEBUG] Error in processData:", error);
                         <p><strong>Children:</strong> ${data.children_count || 0}</p>
                         <p><strong>Complexity:</strong> ${data.complexity || 'N/A'}</p>
         </div>
+                    ${failureSummaryHtml}
                     <div class="details-section">
                         <h5>Performance Score</h5>
                         <p><strong>Combined Score:</strong> ${formatScore(data.combined_score)}</p>
@@ -6402,6 +6497,43 @@ console.error("[DEBUG] Error in processData:", error);
                 // Return the original value as string if it's not a valid number
                 return String(score);
             }
+        }
+
+        function isFailedProposalNode(program) {
+            return Boolean(
+                program &&
+                program.metadata &&
+                program.metadata.node_kind === 'failed_proposal'
+            );
+        }
+
+        function getFailureStatusLabel(program) {
+            if (isFailedProposalNode(program)) {
+                const failureClass = program.metadata.failure_class || program.metadata.failure_stage || 'failed_proposal';
+                return failureClass.replace(/_/g, ' ');
+            }
+            return program.correct ? 'correct' : 'incorrect';
+        }
+
+        function buildFailureSummaryHtml(data) {
+            if (!isFailedProposalNode(data)) {
+                return '';
+            }
+
+            const failureStage = data.metadata?.failure_stage || 'proposal';
+            const failureClass = data.metadata?.failure_class || 'failed_proposal';
+            const failureReason = data.metadata?.failure_reason || data.text_feedback || 'Failed before downstream evaluation.';
+            const failureJsonPath = data.metadata?.failure_json_path || 'N/A';
+
+            return `
+                <div class="details-section">
+                    <h5>Failure Summary</h5>
+                    <p><strong>Stage:</strong> ${escapeHtml(String(failureStage))}</p>
+                    <p><strong>Class:</strong> ${escapeHtml(String(failureClass))}</p>
+                    <p><strong>Reason:</strong> ${escapeHtml(String(failureReason))}</p>
+                    <p><strong>failure.json:</strong> <span class="metadata-value">${escapeHtml(String(failureJsonPath))}</span></p>
+                </div>
+            `;
         }
         // Create charts for the Meta Info tab
         function createCharts(currentGenId) {
@@ -7613,11 +7745,21 @@ console.error("[DEBUG] Error in processData:", error);
         // Add specific panel resize handling to redraw the tree when panels are resized
         const observer = new ResizeObserver(() => {
             console.log("[DEBUG] Panel resized");
-            const resultSelect = document.getElementById('result-select');
-            
-            if (resultSelect.value) {
-                loadDatabase(resultSelect.value);
+
+            if (window.isResizing) {
+                return;
             }
+
+            if (window.treeResizeTimeout) {
+                clearTimeout(window.treeResizeTimeout);
+            }
+
+            window.treeResizeTimeout = setTimeout(() => {
+                const treeTab = document.querySelector('.left-tab[data-tab="tree-view"]');
+                if (window.treeData && treeTab && treeTab.classList.contains('active')) {
+                    renderGraph(window.treeData, true);
+                }
+            }, 100);
         });
         
         // Observe the tree panel for size changes
@@ -8001,9 +8143,14 @@ console.error("[DEBUG] Error in processData:", error);
             pageData.forEach(prog => {
                 const row = document.createElement("tr");
                 row.setAttribute("data-node-id", prog.id);
+                const isFailedProposal = isFailedProposalNode(prog);
+                const statusLabel = getFailureStatusLabel(prog);
                 
                 // Style incorrect programs differently
-                if (!prog.correct) {
+                if (isFailedProposal) {
+                    row.style.backgroundColor = '#fff1f0';
+                    row.style.color = '#7a1c1c';
+                } else if (!prog.correct) {
                     row.style.backgroundColor = '#fff5f5';
                     row.style.color = '#721c24';
                 }
@@ -8026,6 +8173,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <td>${prog.original_rank}</td>
                     <td>${prog.generation}</td>
                     <td style="text-align: center; color: ${prog.in_archive ? '#28a745' : '#6c757d'}; font-weight: bold;">${archiveStatus}</td>
+                    <td>${escapeHtml(statusLabel)}</td>
                     <td>${patchName}</td>
                     <td>${prog.metadata?.patch_type || 'N/A'}</td>
                     <td>${islandIdx}</td>
@@ -8259,7 +8407,15 @@ console.error("[DEBUG] Error in processData:", error);
             return filteredData;
         }
 
-        function datasetHasCompleteEmbeddings(data) {
+        function embeddingFieldIsHydrated(program) {
+            return (
+                program &&
+                Object.prototype.hasOwnProperty.call(program, 'embedding') &&
+                Array.isArray(program.embedding)
+            );
+        }
+
+        function datasetHasHydratedEmbeddingFields(data) {
             const filteredData = filterEmbeddingHeatmapData(data);
             const programsNeedingEmbeddings = filteredData.filter(
                 d => d && d.id && !String(d.id).includes('___virtual_root')
@@ -8270,7 +8426,7 @@ console.error("[DEBUG] Error in processData:", error);
             }
 
             return programsNeedingEmbeddings.every(
-                d => d.embedding && Array.isArray(d.embedding) && d.embedding.length > 0
+                program => embeddingFieldIsHydrated(program)
             );
         }
 
@@ -8304,7 +8460,7 @@ console.error("[DEBUG] Error in processData:", error);
                 );
             }
 
-            if (!datasetHasCompleteEmbeddings(filteredData)) {
+            if (!datasetHasHydratedEmbeddingFields(filteredData)) {
                 d3.select("#embeddings-heatmap")
                     .append("div")
                     .style("text-align", "center")
@@ -9011,10 +9167,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 selectNodeById(selectedNodeId, true, false); // Don't force right tab switch
                                 // Restore right tab AFTER node selection
                                 if (rightTab) {
-                                    const tabElement = document.querySelector(`.tab[data-tab="${rightTab}"]`);
-                                    if (tabElement) {
-                                        setTimeout(() => tabElement.click(), 100);
-                                    }
+                                    setTimeout(() => window.activateRightTab?.(rightTab), 100);
                                 }
                             }, 500);
                         } else {
@@ -9025,10 +9178,7 @@ console.error("[DEBUG] Error in processData:", error);
                 } else {
                     // No node selected, just restore right tab
                     if (rightTab) {
-                        const tabElement = document.querySelector(`.tab[data-tab="${rightTab}"]`);
-                        if (tabElement) {
-                            setTimeout(() => tabElement.click(), 100);
-                        }
+                        setTimeout(() => window.activateRightTab?.(rightTab), 100);
                     }
                 }
                 
@@ -9076,12 +9226,33 @@ console.error("[DEBUG] Error in processData:", error);
             return merged;
         }
 
+        function fullProgramDataCoversEmbeddingHydration(existingData, fullData) {
+            const baseData = filterEmbeddingHeatmapData(Array.isArray(existingData) ? existingData : []);
+            const fullPrograms = Array.isArray(fullData) ? fullData : [];
+            const fullDataMap = new Map(fullPrograms.map(program => [program.id, program]));
+            const programsNeedingEmbeddings = baseData.filter(
+                program => program && program.id && !String(program.id).includes('___virtual_root')
+            );
+
+            if (programsNeedingEmbeddings.length === 0) {
+                return false;
+            }
+
+            return programsNeedingEmbeddings.every(program => {
+                if (embeddingFieldIsHydrated(program)) {
+                    return true;
+                }
+
+                return embeddingFieldIsHydrated(fullDataMap.get(program.id));
+            });
+        }
+
         function refreshEmbeddingsHeatmap() {
             if (!window.treeData || window.treeData.length === 0) {
                 return;
             }
 
-            if (datasetHasCompleteEmbeddings(window.treeData)) {
+            if (datasetHasHydratedEmbeddingFields(window.treeData)) {
                 createEmbeddingsHeatmap(window.treeData);
                 return;
             }
@@ -9102,30 +9273,35 @@ console.error("[DEBUG] Error in processData:", error);
             }
             
             const existingHeatmap = heatmapContainer.querySelector('svg');
-            if (existingHeatmap && datasetHasCompleteEmbeddings(window.treeData)) {
+            if (existingHeatmap && datasetHasHydratedEmbeddingFields(window.treeData)) {
                 console.log("[DEBUG] Embeddings heatmap already exists");
                 return;
             }
             
             // If we have data but no heatmap, create it
             if (window.treeData && window.treeData.length > 0) {
-                if (datasetHasCompleteEmbeddings(window.treeData)) {
+                if (datasetHasHydratedEmbeddingFields(window.treeData)) {
                     console.log("[DEBUG] Creating embeddings heatmap with existing data");
                     createEmbeddingsHeatmap(window.treeData);
                 } else if (window.currentDbPath) {
                     window.fullProgramDataByDb = window.fullProgramDataByDb || {};
+                    const cachedFullData = window.fullProgramDataByDb[window.currentDbPath];
 
-                    if (window.fullProgramDataByDb[window.currentDbPath]) {
+                    if (cachedFullData && fullProgramDataCoversEmbeddingHydration(window.treeData, cachedFullData)) {
                         window.treeData = mergeFullProgramData(
                             window.treeData,
-                            window.fullProgramDataByDb[window.currentDbPath]
+                            cachedFullData
                         );
                         window.rawDbData = mergeFullProgramData(
                             window.rawDbData,
-                            window.fullProgramDataByDb[window.currentDbPath]
+                            cachedFullData
                         );
                         createEmbeddingsHeatmap(window.treeData);
                         return;
+                    }
+
+                    if (cachedFullData) {
+                        console.log("[DEBUG] Cached full embedding data is stale, refetching");
                     }
 
                     if (window.loadingFullEmbeddings) {
@@ -10177,7 +10353,15 @@ console.error("[DEBUG] Error in processData:", error);
                         
                         // Update node styles
                         node.selectAll('path')
-                            .style("stroke", n => ancestorIds.has(n.data.id) ? '#ff8c00' : "#000")
+                            .style("stroke", n => {
+                                if (ancestorIds.has(n.data.id)) {
+                                    return '#ff8c00';
+                                }
+                                if (isFailedProposalNode(n.data)) {
+                                    return '#c0392b';
+                                }
+                                return "#000";
+                            })
                             .style("stroke-width", n => ancestorIds.has(n.data.id) ? 3 : 2)
                             .style("filter", n => n.data.id === window.bestNodeId ? "drop-shadow(0px 2px 4px rgba(255, 140, 0, 0.3))" : "drop-shadow(0px 1px 2px rgba(0,0,0,0.2))");
                         
@@ -10218,14 +10402,23 @@ console.error("[DEBUG] Error in processData:", error);
                     const patchType = d.data.metadata.patch_type || 'N/A';
                     const islandIdx = d.data.island_idx;
                     
-                    tooltip.html(`
-                        <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
-                        <strong>Score:</strong> ${score}<br>
-                        <strong>Type:</strong> ${patchType}<br>
-                        <strong>Island:</strong> ${islandIdx}
-                    `)
-                    .style("left", (event.pageX + 15) + "px")
-                    .style("top", (event.pageY - 10) + "px");
+                    if (isFailedProposalNode(d.data)) {
+                        tooltip.html(`
+                            <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                            <strong>Status:</strong> Failed Proposal<br>
+                            <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
+                            <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
+                        `);
+                    } else {
+                        tooltip.html(`
+                            <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
+                            <strong>Score:</strong> ${score}<br>
+                            <strong>Type:</strong> ${patchType}<br>
+                            <strong>Island:</strong> ${islandIdx}
+                        `);
+                    }
+                    tooltip.style("left", (event.pageX + 15) + "px")
+                        .style("top", (event.pageY - 10) + "px");
                 })
                 .on('mousemove', (event) => {
                     d3.select(".node-tooltip")
@@ -10244,6 +10437,7 @@ console.error("[DEBUG] Error in processData:", error);
                     })
                     .style("fill", d => {
                         if (d.data.id === window.bestNodeId) return '#ffd700';
+                        if (isFailedProposalNode(d.data)) return '#ffb3b3';
                         if (!d.data.correct) return '#e74c3c';
                         const score = d.data.combined_score;
                         if (score !== null && !isNaN(score)) {
@@ -10263,9 +10457,11 @@ console.error("[DEBUG] Error in processData:", error);
                                 return "#000";
                             }
                         }
+                        if (isFailedProposalNode(d.data)) return '#c0392b';
                         return "#000";
                     })
                     .style("stroke-width", d => ancestorIds.has(d.data.id) ? 3 : 2)
+                    .style("stroke-dasharray", d => isFailedProposalNode(d.data) ? "6,3" : null)
                     .style("filter", d => d.data.id === window.bestNodeId ? "drop-shadow(0px 2px 4px rgba(255, 140, 0, 0.3))" : "drop-shadow(0px 1px 2px rgba(0,0,0,0.2))");
 
                 // Add animated rings for the SINGLE best node (island view)
@@ -10956,9 +11152,9 @@ console.error("[DEBUG] Error in processData:", error);
             console.log("[DEBUG] FORCING HTML structure recreation");
             container.html(`
                 <h4 style="margin: 0 0 20px 0; text-align: center;">Number of Programs Proposed by Each Model</h4>
-                <div id="model-program-counts-chart" style="width: 100%; height: 300px; margin-bottom: 30px;"></div>
+                <div id="model-program-counts-chart" style="width: 100%; height: 340px; margin-bottom: 30px;"></div>
                 <h4 style="margin: 0 0 20px 0; text-align: center;">Model Posterior Probabilities Over Generations</h4>
-                <div id="model-posteriors-chart" style="width: 100%; height: 300px;"></div>
+                <div id="model-posteriors-chart" style="width: 100%; height: 340px;"></div>
                 <div id="model-posteriors-summary" style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
                     <h5 style="margin: 0 0 10px 0;">Summary Statistics</h5>
                     <div id="model-posteriors-stats"></div>
@@ -11189,15 +11385,16 @@ console.error("[DEBUG] Error in processData:", error);
             container.select("#model-posteriors-chart").html("");
 
             // Set up dimensions with more horizontal space (reduced top margin since legend moved to counts chart)
-            const margin = {top: 0, right: 20, bottom: 40, left: 60};
+            const margin = {top: 20, right: 20, bottom: 40, left: 60};
+            const chartHeight = 340;
             const width = 800 - margin.left - margin.right;
-            const height = 300 - margin.top - margin.bottom;
+            const height = chartHeight - margin.top - margin.bottom;
 
             // Create SVG
             const svg = container.select("#model-posteriors-chart")
                 .append("svg")
                 .attr("width", width + margin.left + margin.right)
-                .attr("height", height + margin.top + margin.bottom);
+                .attr("height", chartHeight);
 
             const g = svg.append("g")
                 .attr("transform", `translate(${margin.left},${margin.top})`);
@@ -11268,6 +11465,17 @@ console.error("[DEBUG] Error in processData:", error);
                         .attr("stroke", colorScale(model))
                         .attr("stroke-width", 2)
                         .attr("d", line);
+
+                    g.append("g")
+                        .selectAll(".posterior-point")
+                        .data(data)
+                        .enter()
+                        .append("circle")
+                        .attr("class", "posterior-point")
+                        .attr("cx", d => xScale(d.generation))
+                        .attr("cy", d => yScale(d.posterior))
+                        .attr("r", 4)
+                        .attr("fill", colorScale(model));
                 }
             });
 
@@ -11368,10 +11576,10 @@ console.error("[DEBUG] Error in processData:", error);
             const countsSvg = container.select("#model-program-counts-chart")
                 .append("svg")
                 .attr("width", width + margin.left + margin.right)
-                .attr("height", height + margin.top + margin.bottom);
+                .attr("height", chartHeight);
 
             // Use smaller top margin for counts chart to reduce space between title and plot
-            const countsTopMargin = 30; // Reduced from 70
+            const countsTopMargin = 40;
             const countsG = countsSvg.append("g")
                 .attr("transform", `translate(${margin.left},${countsTopMargin})`);
 
@@ -11385,8 +11593,7 @@ console.error("[DEBUG] Error in processData:", error);
                 d3.max(modelData, d => d.cumulativeCount)
             );
             
-            // Adjust height for the smaller top margin
-            const countsHeight = height + (margin.top - countsTopMargin); // Add back the space we saved
+            const countsHeight = chartHeight - countsTopMargin - margin.bottom;
             const countsYScale = d3.scaleLinear()
                 .domain([0, maxCumulativeCount])
                 .range([countsHeight, 0]);
@@ -11529,6 +11736,17 @@ console.error("[DEBUG] Error in processData:", error);
                     .attr("stroke", colorScale(model))
                     .attr("stroke-width", 2)
                     .attr("d", cumulativeLine);
+
+                countsG.append("g")
+                    .selectAll(".cumulative-count-point")
+                    .data(validData)
+                    .enter()
+                    .append("circle")
+                    .attr("class", "cumulative-count-point")
+                    .attr("cx", d => countsXScale(d.generation))
+                    .attr("cy", d => countsYScale(d.cumulativeCount))
+                    .attr("r", 4)
+                    .attr("fill", colorScale(model));
                 
                 console.log(`[DEBUG] Path created for ${model.split('/').pop()}, path element:`, path.node());
             });
@@ -12702,7 +12920,8 @@ console.error("[DEBUG] Error in processData:", error);
                     'python': 'py',
                     'cpp': 'cpp',
                     'javascript': 'js',
-                    'cuda': 'cu'
+                    'cuda': 'cu',
+                    'fortran': 'f90'
                 }[language] || language;
                 
                 // Determine comment style based on language
@@ -12714,7 +12933,12 @@ console.error("[DEBUG] Error in processData:", error);
                     'javascript': '//',
                     'js': '//',
                     'cuda': '//',
-                    'cu': '//'
+                    'cu': '//',
+                    'fortran': '!',
+                    'f90': '!',
+                    'f95': '!',
+                    'f03': '!',
+                    'f08': '!'
                 }[language.toLowerCase()] || '//';
                 
                 const filename = `${rank}_gen${gen}_${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.${extension}`;
@@ -15636,6 +15860,62 @@ console.error("[DEBUG] Error in processData:", error);
             return reconciledRows;
         }
 
+        function assignStageTimelineLaneIds(
+            rows,
+            { workerIdKey, startKey, endKey, fallbackLaneKey, capacity }
+        ) {
+            const assignedRows = rows.map(row => ({ ...row }));
+            const validRows = assignedRows
+                .filter(
+                    row => Number.isFinite(row[startKey]) && Number.isFinite(row[endKey])
+                )
+                .sort((a, b) => {
+                    if (a[startKey] !== b[startKey]) {
+                        return a[startKey] - b[startKey];
+                    }
+                    if (a[endKey] !== b[endKey]) {
+                        return a[endKey] - b[endKey];
+                    }
+                    if (a.generation !== b.generation) {
+                        return a.generation - b.generation;
+                    }
+                    return a.pipelineStartedAt - b.pipelineStartedAt;
+                });
+
+            const laneCount = Math.max(0, Math.floor(capacity || 0));
+            const laneEndTimes = Array.from(
+                { length: laneCount },
+                () => Number.NEGATIVE_INFINITY
+            );
+            const laneEpsilon = 1e-6;
+
+            validRows.forEach(row => {
+                const workerId = row[workerIdKey];
+                if (Number.isFinite(workerId) && workerId > 0) {
+                    const laneIndex = Math.floor(workerId) - 1;
+                    while (laneEndTimes.length <= laneIndex) {
+                        laneEndTimes.push(Number.NEGATIVE_INFINITY);
+                    }
+                    laneEndTimes[laneIndex] = row[endKey];
+                    row[fallbackLaneKey] = Math.floor(workerId);
+                    return;
+                }
+
+                let laneIndex = laneEndTimes.findIndex(
+                    laneEndTime => row[startKey] >= laneEndTime - laneEpsilon
+                );
+                if (laneIndex === -1) {
+                    laneIndex = laneEndTimes.length;
+                    laneEndTimes.push(row[endKey]);
+                } else {
+                    laneEndTimes[laneIndex] = row[endKey];
+                }
+                row[fallbackLaneKey] = laneIndex + 1;
+            });
+
+            return assignedRows;
+        }
+
         function getLegacyRuntimeTimelineRows(data) {
             const rows = getBaseRuntimeTimelineRows(data);
             if (rows.length === 0) return { rows: [], laneCount: 0 };
@@ -15692,11 +15972,47 @@ console.error("[DEBUG] Error in processData:", error);
                 rows = reconcileStageWorkerOverlaps(rows, stage);
             });
 
-            const capacities = {
+            let capacities = {
                 sampling: Math.max(0, ...rows.map(row => row.samplingWorkerCapacity || row.samplingWorkerId || 0)),
                 evaluation: Math.max(0, ...rows.map(row => row.evaluationWorkerCapacity || row.evaluationWorkerId || 0)),
                 postprocess: Math.max(0, ...rows.map(row => row.postprocessWorkerCapacity || row.postprocessWorkerId || 0))
             };
+
+            [
+                {
+                    workerIdKey: 'samplingWorkerId',
+                    startKey: 'samplingStartedAt',
+                    endKey: 'samplingFinishedAt',
+                    fallbackLaneKey: 'samplingLaneId',
+                    capacityKey: 'sampling'
+                },
+                {
+                    workerIdKey: 'evaluationWorkerId',
+                    startKey: 'evaluationStartedAt',
+                    endKey: 'evaluationFinishedAt',
+                    fallbackLaneKey: 'evaluationLaneId',
+                    capacityKey: 'evaluation'
+                },
+                {
+                    workerIdKey: 'postprocessWorkerId',
+                    startKey: 'postprocessStartedAt',
+                    endKey: 'postprocessFinishedAt',
+                    fallbackLaneKey: 'postprocessLaneId',
+                    capacityKey: 'postprocess'
+                }
+            ].forEach(stage => {
+                rows = assignStageTimelineLaneIds(rows, {
+                    workerIdKey: stage.workerIdKey,
+                    startKey: stage.startKey,
+                    endKey: stage.endKey,
+                    fallbackLaneKey: stage.fallbackLaneKey,
+                    capacity: capacities[stage.capacityKey]
+                });
+                capacities[stage.capacityKey] = Math.max(
+                    capacities[stage.capacityKey],
+                    ...rows.map(row => row[stage.fallbackLaneKey] || 0)
+                );
+            });
 
             if (capacities.sampling === 0 && capacities.evaluation === 0 && capacities.postprocess === 0) {
                 return null;
@@ -15725,6 +16041,54 @@ console.error("[DEBUG] Error in processData:", error);
                     postprocess: computePeakConcurrency(rows, 'postprocessStartedAt', 'postprocessFinishedAt')
                 }
             };
+        }
+
+        window.isThroughputRuntimePlotVisible = true;
+
+        const RUNTIME_TIMELINE_ROW_HEIGHT = 34;
+        const RUNTIME_TIMELINE_MIN_HEIGHT = 220;
+        const RUNTIME_TIMELINE_BASE_CHROME = 140;
+        const RUNTIME_TIMELINE_LINE_WIDTH = 12;
+        const RUNTIME_TIMELINE_BAR_WIDTH = 0.72;
+
+        function getRuntimeTimelinePlotHeight(laneCount) {
+            const safeLaneCount = Math.max(0, Math.floor(laneCount || 0));
+            return Math.max(
+                RUNTIME_TIMELINE_MIN_HEIGHT,
+                RUNTIME_TIMELINE_BASE_CHROME + (safeLaneCount * RUNTIME_TIMELINE_ROW_HEIGHT)
+            );
+        }
+
+        function getRuntimeTimelineLineWidth() {
+            return RUNTIME_TIMELINE_LINE_WIDTH;
+        }
+
+        function getRuntimeTimelineBarWidth() {
+            return RUNTIME_TIMELINE_BAR_WIDTH;
+        }
+
+        function setThroughputRuntimePlotVisibility(isVisible, rerender = false) {
+            window.isThroughputRuntimePlotVisible = isVisible;
+            const wrapper = document.getElementById('throughput-runtime-plot-wrapper');
+            const button = document.getElementById('throughput-runtime-toggle');
+            if (wrapper) {
+                wrapper.style.display = isVisible ? 'block' : 'none';
+            }
+            if (button) {
+                button.textContent = isVisible ? 'Hide Plot' : 'Show Plot';
+            }
+            if (
+                isVisible &&
+                rerender &&
+                window.treeData &&
+                window.treeData.length > 0
+            ) {
+                renderRuntimeTimelinePlot(window.treeData, window.selectedNodeId || null, 'throughput-runtime-summary', 'throughput-runtime-plot');
+            }
+        }
+
+        function toggleThroughputRuntimePlot() {
+            setThroughputRuntimePlotVisibility(!window.isThroughputRuntimePlotVisible, window.isThroughputRuntimePlotVisible === false);
         }
 
         function getRuntimeTimelineLayout({
@@ -15795,8 +16159,8 @@ console.error("[DEBUG] Error in processData:", error);
             const poolData = getPoolRuntimeTimelineData(data);
             if (poolData && poolData.rows.length) {
                 const { rows, capacities, laneLabels, peaks } = poolData;
-                const runtimePlotHeight = 420;
-                const poolBarWidth = Math.max(0.12, Math.min(0.75, 3.6 / Math.max(laneLabels.length, 1)));
+                const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneLabels.length);
+                const poolLineWidth = getRuntimeTimelineLineWidth();
                 if (summary) {
                     summary.innerHTML = `
                         <span><strong>Sampling:</strong> peak ${peaks.sampling}/${capacities.sampling || 0}</span>
@@ -15813,7 +16177,7 @@ console.error("[DEBUG] Error in processData:", error);
                         startKey: 'samplingStartedAt',
                         endKey: 'samplingFinishedAt',
                         durationKey: 'samplingSeconds',
-                        laneLabel: row => row.samplingWorkerId ? `Sampling W${row.samplingWorkerId}` : null
+                        laneLabel: row => (row.samplingWorkerId || row.samplingLaneId) ? `Sampling W${row.samplingWorkerId || row.samplingLaneId}` : null
                     },
                     {
                         key: 'evaluation',
@@ -15822,7 +16186,7 @@ console.error("[DEBUG] Error in processData:", error);
                         startKey: 'evaluationStartedAt',
                         endKey: 'evaluationFinishedAt',
                         durationKey: 'evaluationSeconds',
-                        laneLabel: row => row.evaluationWorkerId ? `Evaluation W${row.evaluationWorkerId}` : null
+                        laneLabel: row => (row.evaluationWorkerId || row.evaluationLaneId) ? `Evaluation W${row.evaluationWorkerId || row.evaluationLaneId}` : null
                     },
                     {
                         key: 'postprocess',
@@ -15831,7 +16195,7 @@ console.error("[DEBUG] Error in processData:", error);
                         startKey: 'postprocessStartedAt',
                         endKey: 'postprocessFinishedAt',
                         durationKey: 'postprocessSeconds',
-                        laneLabel: row => row.postprocessWorkerId ? `Postprocess W${row.postprocessWorkerId}` : null
+                        laneLabel: row => (row.postprocessWorkerId || row.postprocessLaneId) ? `Postprocess W${row.postprocessWorkerId || row.postprocessLaneId}` : null
                     }
                 ];
 
@@ -15840,24 +16204,17 @@ console.error("[DEBUG] Error in processData:", error);
                     const minStartMs = Math.min(...rows.map(row => row.pipelineStartedAt * 1000));
                     const maxEndMs = Math.max(...rows.map(row => row.postprocessFinishedAt * 1000));
                     const minVisibleBarMs = getMinVisibleRuntimeBarMs(maxEndMs - minStartMs);
-                    return {
-                        type: 'bar',
-                        orientation: 'h',
-                        name: stage.label,
-                        y: stageRows.map(row => stage.laneLabel(row)),
-                        x: stageRows.map(row => getDisplayRuntimeBarMs(row[stage.durationKey], minVisibleBarMs)),
-                        base: stageRows.map(row => row[stage.startKey] * 1000),
-                        width: stageRows.map(() => poolBarWidth),
-                        marker: {
-                            color: stageRows.map(row => row.id === selectedNodeId ? stage.color : stage.color),
-                            line: {
-                                color: stageRows.map(row => row.id === selectedNodeId ? '#111827' : '#ffffff'),
-                                width: stageRows.map(row => row.id === selectedNodeId ? 1.5 : 0.5)
-                            }
-                        },
-                        opacity: 0.92,
-                        customdata: stageRows.map(row => ([
-                            stage.laneLabel(row),
+                    const x = [];
+                    const y = [];
+                    const customdata = [];
+
+                    stageRows.forEach(row => {
+                        const startMs = row[stage.startKey] * 1000;
+                        const displayDurationMs = getDisplayRuntimeBarMs(row[stage.durationKey], minVisibleBarMs);
+                        const endMs = startMs + displayDurationMs;
+                        const laneLabel = stage.laneLabel(row);
+                        const details = [
+                            laneLabel,
                             row.generation,
                             row.patchName,
                             row.modelName,
@@ -15867,7 +16224,26 @@ console.error("[DEBUG] Error in processData:", error);
                             row.noveltyAttempt ?? 'N/A',
                             row.resampleAttempt ?? 'N/A',
                             row.patchAttempt ?? 'N/A',
-                        ])),
+                        ];
+
+                        x.push(startMs, endMs, null);
+                        y.push(laneLabel, laneLabel, null);
+                        customdata.push(details, details, null);
+                    });
+
+                    return {
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: stage.label,
+                        x,
+                        y,
+                        line: {
+                            color: stage.color,
+                            width: poolLineWidth
+                        },
+                        opacity: 0.92,
+                        connectgaps: false,
+                        customdata,
                         hovertemplate:
                             '<b>%{customdata[0]}</b><br>' +
                             'Gen %{customdata[1]}<br>' +
@@ -15910,8 +16286,8 @@ console.error("[DEBUG] Error in processData:", error);
                 summary.textContent = 'Legacy mode: inferred worker lanes from timestamps only.';
             }
 
-            const runtimePlotHeight = 420;
-            const legacyBarWidth = Math.max(0.12, Math.min(0.75, 3.6 / Math.max(laneCount, 1)));
+            const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneCount);
+            const legacyBarWidth = getRuntimeTimelineBarWidth();
             const stageConfigs = [
                 {
                     key: 'sampling',
@@ -16248,7 +16624,7 @@ console.error("[DEBUG] Error in processData:", error);
                 traces.push({
                     x: series.x,
                     y: series.y.map(value => (value / stage.capacity) * 100),
-                    name: `${stage.label} Utilization`,
+                    name: `${stage.label} Util.`,
                     type: 'scatter',
                     mode: 'lines',
                     line: { color: stage.color, width: 2 },
@@ -16263,7 +16639,7 @@ console.error("[DEBUG] Error in processData:", error);
             traces.push({
                 x: [minStart * 1000, maxEnd * 1000],
                 y: [100, 100],
-                name: '100% Capacity',
+                name: '100% Cap.',
                 type: 'scatter',
                 mode: 'lines',
                 line: { color: '#6b7280', width: 1, dash: 'dot' },
@@ -16279,7 +16655,7 @@ console.error("[DEBUG] Error in processData:", error);
                 },
                 height: 320,
                 margin: { l: 60, r: 20, t: 50, b: 50 },
-                legend: { orientation: 'h', x: 0.01, y: 1.12 },
+                legend: { orientation: 'h', x: 0.01, y: 1.12, font: { size: 11 } },
                 hovermode: 'x unified',
             }, { responsive: true, displayModeBar: false });
         }
@@ -16308,10 +16684,19 @@ console.error("[DEBUG] Error in processData:", error);
                     color: x.map(count => count === capacities.evaluation ? '#f59e0b' : '#60a5fa'),
                 },
             }], {
-                xaxis: { title: 'Occupied Evaluation Workers' },
-                yaxis: { title: 'Wall-Clock Share (%)', rangemode: 'tozero' },
-                height: 320,
-                margin: { l: 60, r: 20, t: 50, b: 50 },
+                xaxis: {
+                    title: 'Occupied Evaluation Workers',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                yaxis: {
+                    title: 'Wall-Clock Share (%)',
+                    rangemode: 'tozero',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                height: 240,
+                margin: { l: 50, r: 10, t: 30, b: 38 },
             }, { responsive: true, displayModeBar: false });
         }
 
@@ -16339,10 +16724,20 @@ console.error("[DEBUG] Error in processData:", error);
                 marker: { color: '#34d399' },
                 name: 'Evaluations / Minute',
             }], {
-                xaxis: { title: 'Wall Clock Time', type: 'date' },
-                yaxis: { title: 'Completed Evaluations', rangemode: 'tozero' },
-                height: 320,
-                margin: { l: 60, r: 20, t: 50, b: 50 },
+                xaxis: {
+                    title: 'Wall Clock Time',
+                    type: 'date',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                yaxis: {
+                    title: 'Completed Evaluations',
+                    rangemode: 'tozero',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                height: 240,
+                margin: { l: 50, r: 10, t: 30, b: 38 },
             }, { responsive: true, displayModeBar: false });
         }
 
@@ -16424,7 +16819,7 @@ console.error("[DEBUG] Error in processData:", error);
 
         function updateThroughputTab(selectedNodeId = null) {
             const throughputTab = document.getElementById('throughput');
-            if (!throughputTab || !throughputTab.classList.contains('active')) {
+            if (!throughputTab) {
                 return;
             }
 
@@ -16451,6 +16846,7 @@ console.error("[DEBUG] Error in processData:", error);
 
             renderThroughputSummary(poolData.rows, poolData.capacities);
             renderRuntimeTimelinePlot(window.treeData, selectedNodeId, 'throughput-runtime-summary', 'throughput-runtime-plot');
+            setThroughputRuntimePlotVisibility(window.isThroughputRuntimePlotVisible);
             renderThroughputOccupancyPlot(poolData.rows, poolData.capacities);
             renderThroughputOccupancyPercentPlot(poolData.rows, poolData.capacities);
             renderThroughputEvalDistributionPlot(poolData.rows, poolData.capacities);

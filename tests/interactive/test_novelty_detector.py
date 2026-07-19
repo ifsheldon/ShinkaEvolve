@@ -54,6 +54,7 @@ def _make_program_data(
         public_metrics={},
         private_metrics={},
         embedding=[],
+        reasoning_embedding=[],
         code_diff=None,
         metadata={},
     )

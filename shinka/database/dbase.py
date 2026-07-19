@@ -54,6 +54,9 @@ class DatabaseConfig:
     db_path: Optional[str] = "evolution_db.sqlite"  # Path to SQLite database file
     num_islands: int = 4
     archive_size: int = 100
+    # Max chars of stdout_log persisted to program metadata (tail kept).
+    # None = no truncation (full stdout stored). Full log always stays on disk.
+    max_stdout_log_chars: Optional[int] = None
 
     # Inspiration parameters
     elite_selection_ratio: float = 0.3  # Prop of elites inspirations
@@ -527,6 +530,24 @@ class ProgramDatabase:
             ON generation_event_log(generation)
             """
         )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attempt_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generation INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_attempt_log_generation
+            ON attempt_log(generation)
+            """
+        )
 
         self.cursor.execute(
             """
@@ -644,7 +665,9 @@ class ProgramDatabase:
         # Migration 7: Add reasoning_embedding_pca_2d column if it doesn't exist
         try:
             if "reasoning_embedding_pca_2d" not in columns:
-                logger.info("Adding reasoning_embedding_pca_2d column to programs table")
+                logger.info(
+                    "Adding reasoning_embedding_pca_2d column to programs table"
+                )
                 self.cursor.execute(
                     "ALTER TABLE programs ADD COLUMN reasoning_embedding_pca_2d TEXT"
                 )
@@ -666,6 +689,30 @@ class ProgramDatabase:
                 logger.info("Successfully added reasoning_embedding_cluster_id column")
         except sqlite3.Error as e:
             logger.error(f"Error during reasoning_embedding_cluster_id migration: {e}")
+
+        # Migration 9: Ensure attempt_log exists for proposal-failure accounting.
+        try:
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attempt_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    generation INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    details TEXT,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_attempt_log_generation
+                ON attempt_log(generation)
+                """
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error during attempt_log migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -760,6 +807,31 @@ class ProgramDatabase:
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (generation, status, source_job_id, payload, time.time()),
+        )
+        self.conn.commit()
+
+    @db_retry()
+    def record_attempt_event(
+        self,
+        generation: int,
+        stage: str,
+        status: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        payload = None
+        if details is not None:
+            payload = json.dumps(clean_nan_values(details), sort_keys=True)
+
+        self.cursor.execute(
+            """
+            INSERT INTO attempt_log (
+                generation, stage, status, details, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (generation, stage, status, payload, time.time()),
         )
         self.conn.commit()
 
@@ -1231,24 +1303,6 @@ class ProgramDatabase:
         self.cursor.execute("SELECT * FROM programs WHERE id = ?", (program_id,))
         row = self.cursor.fetchone()
         return self._program_from_row(row)
-
-    def get_programs_by_ids(self, program_ids: List[str]) -> List[Program]:
-        """Resolve multiple program IDs into Program objects.
-
-        Args:
-            program_ids: Program IDs to resolve.
-
-        Returns:
-            List of Program objects in input order, skipping missing IDs.
-        """
-        if not program_ids:
-            return []
-        programs: List[Program] = []
-        for pid in program_ids:
-            p = self.get(pid)
-            if p is not None:
-                programs.append(p)
-        return programs
 
     @db_retry()
     def get_programs_by_ids(self, program_ids: List[str]) -> List[Program]:
@@ -1989,7 +2043,11 @@ class ProgramDatabase:
             r_emb_raw = row["reasoning_embedding"]
             if r_emb_raw:
                 try:
-                    r_emb = json.loads(r_emb_raw) if isinstance(r_emb_raw, str) else r_emb_raw
+                    r_emb = (
+                        json.loads(r_emb_raw)
+                        if isinstance(r_emb_raw, str)
+                        else r_emb_raw
+                    )
                     if isinstance(r_emb, list) and len(r_emb) > 0:
                         reasoning_embeddings.append(r_emb)
                 except (json.JSONDecodeError, TypeError):
@@ -2024,6 +2082,7 @@ class ProgramDatabase:
                 p.embedding_pca_3d,
                 p.embedding_cluster_id,
                 p.language,
+                p.text_feedback,
                 p.top_k_inspiration_ids,
                 p.archive_inspiration_ids,
                 p.migration_history,
@@ -2709,7 +2768,9 @@ class ProgramDatabase:
                 )
             logger.info(log_msg)
 
-    def print_summary(self, console=None) -> None:
+    def print_summary(
+        self, console=None, total_program_target: Optional[int] = None
+    ) -> None:
         """Print a summary of the database contents using DatabaseDisplay."""
         if not hasattr(self, "_database_display"):
             self._database_display = DatabaseDisplay(
@@ -2725,7 +2786,10 @@ class ProgramDatabase:
 
         if hasattr(self._database_display, "set_default_console"):
             self._database_display.set_default_console(self.display_console)
-        self._database_display.print_summary(console)
+        self._database_display.print_summary(
+            console,
+            total_program_target=total_program_target,
+        )
 
     def _print_program_summary(self, program) -> None:
         """Print a rich summary of a newly added program using DatabaseDisplay."""
@@ -2928,80 +2992,6 @@ class ProgramDatabase:
             f"Computed {len(similarity_scores)} similarity scores for "
             f"island {island_idx}"
         )
-        return similarity_scores
-
-    def compute_reasoning_similarity_thread_safe(
-        self, vec: List[float], island_idx: int
-    ) -> List[float]:
-        """Thread-safe reasoning embedding similarity computation."""
-        conn = None
-        try:
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT reasoning_embedding FROM programs "
-                "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
-                "AND reasoning_embedding != '[]'",
-                (island_idx,),
-            )
-            rows = cursor.fetchall()
-
-            if not rows:
-                return []
-
-            similarities = []
-            for row in rows:
-                db_embedding = json.loads(row["reasoning_embedding"])
-                if db_embedding:
-                    sim = self._cosine_similarity(vec, db_embedding)
-                    similarities.append(sim)
-            return similarities
-
-        except Exception as e:
-            logger.error(f"Thread-safe reasoning similarity computation failed: {e}")
-            raise
-        finally:
-            if conn:
-                conn.close()
-
-    @db_retry()
-    def compute_reasoning_similarity(
-        self, reasoning_embedding: List[float], island_idx: int
-    ) -> List[float]:
-        """Compute similarity between a reasoning embedding and all programs on an island."""
-        if not self.cursor:
-            raise ConnectionError("DB not connected.")
-
-        if not reasoning_embedding:
-            return []
-
-        self.cursor.execute(
-            "SELECT id, reasoning_embedding FROM programs "
-            "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
-            "AND reasoning_embedding != '[]'",
-            (island_idx,),
-        )
-        rows = self.cursor.fetchall()
-
-        if not rows:
-            return []
-
-        similarity_scores = []
-        for row in rows:
-            try:
-                embedding = json.loads(row["reasoning_embedding"])
-                if embedding:
-                    similarity = self._cosine_similarity(reasoning_embedding, embedding)
-                    similarity_scores.append(similarity)
-                else:
-                    similarity_scores.append(0.0)
-            except json.JSONDecodeError:
-                similarity_scores.append(0.0)
-
         return similarity_scores
 
     @db_retry()
@@ -3350,9 +3340,7 @@ class ProgramDatabase:
             )
         except Exception as e:
             conn.rollback()
-            logger.error(
-                "Failed to update reasoning embedding features: %s", e
-            )
+            logger.error("Failed to update reasoning embedding features: %s", e)
 
     @db_retry()
     def _recompute_embeddings_and_clusters_thread_safe(self, num_clusters: int = 4):

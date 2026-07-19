@@ -8,20 +8,9 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text()
 
 
-def test_public_ci_excludes_secret_backed_tests() -> None:
-    workflow = _read(".github/workflows/ci.yml")
-
-    assert 'pytest -q -m "not requires_secrets"' in workflow
-
-
-def test_integration_workflow_exists_for_secret_backed_tests() -> None:
-    workflow = _read(".github/workflows/integration.yml")
-
-    assert "workflow_dispatch:" in workflow
-    assert "schedule:" in workflow
-    assert "push:" in workflow
-    assert 'pytest -q -m "requires_secrets"' in workflow
-    assert "OPENAI_API_KEY" in workflow
+def test_github_actions_remain_disabled_on_interactive_branch() -> None:
+    for workflow in ("ci.yml", "integration.yml", "docs-release.yml"):
+        assert not (ROOT / ".github" / "workflows" / workflow).exists()
 
 
 def test_pytest_markers_are_registered() -> None:
@@ -29,6 +18,7 @@ def test_pytest_markers_are_registered() -> None:
 
     assert 'addopts = "--strict-markers"' in pyproject
     assert "integration: live external/provider integration coverage" in pyproject
+    assert "models_dev_live: live models.dev catalog contract coverage" in pyproject
     assert (
         "requires_secrets: tests that need CI secrets or private credentials"
         in pyproject

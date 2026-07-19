@@ -7,7 +7,7 @@ Compact Shinka task: pack `n=26` circles in a unit square, maximize sum of radii
 - `initial.py`: seed solution; exposes `run_packing()`.
 - `evaluate.py`: validator + scorer; runs `run_packing`, checks geometry constraints, writes metrics/artifacts.
 - `run_evo.py`: async evolution runner (uses top-level worker keys from YAML).
-- `shinka_small.yaml`, `shinka_medium.yaml`, `shinka_long.yaml`: run profiles.
+- `shinka_small.yaml`, `shinka_medium.yaml`, `shinka_large.yaml`: run profiles.
 - `load_results.ipynb`: post-run analysis plots (incl. 2x3 dashboard).
 - `viz_circles.ipynb`: geometry-focused circle layout visualization.
 
@@ -15,9 +15,9 @@ Compact Shinka task: pack `n=26` circles in a unit square, maximize sum of radii
 
 | Config | Intended Use | Core Shape |
 |---|---|---|
-| `shinka_small.yaml` | default dev run | async `2/2/2` workers, `100` generations, `$0.5` budget, `1` island, prompt evolution enabled |
-| `shinka_medium.yaml` | moderate parallel run | async `5/5/4` workers, `100` generations, `$0.1` budget, `2` islands |
-| `shinka_long.yaml` | long/high-throughput run | async `20/20/8` workers, `400` generations, `$2.0` budget, `2` islands |
+| `shinka_small.yaml` | default dev run | async `5/5/4` workers, `200` generations, `$20` budget, `2` islands |
+| `shinka_medium.yaml` | moderate parallel run | async `10/10/4` workers, `200` generations, `$20` budget, `2` islands |
+| `shinka_large.yaml` | high-throughput run | async `20/20/4` workers, `200` generations, `$20` budget, `2` islands |
 
 Notes:
 

@@ -198,3 +198,6 @@ results
 .idea/
 .vscode/
 outputs
+
+# Local browser automation state
+.playwright-cli/

@@ -9,6 +9,7 @@ from .general import (
     load_results,
     load_configs_from_yaml,
     write_timeout_marker,
+    truncate_log_tail,
 )
 from .utils_hydra import (
     build_cfgs_from_python,
@@ -32,6 +33,7 @@ __all__ = [
     "load_hydra_config",
     "load_configs_from_yaml",
     "write_timeout_marker",
+    "truncate_log_tail",
     "get_language_extension",
     "load_prompts_to_df",
 ]

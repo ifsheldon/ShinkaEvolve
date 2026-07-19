@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import openai
 import pytest
 
+import shinka.embed.client as embed_client_module
 from shinka.embed.client import get_async_client_embed, get_client_embed
 from shinka.embed.embedding import AsyncEmbeddingClient, EmbeddingClient
 
@@ -48,6 +49,63 @@ def test_get_async_client_embed_local_openai_inline_url(monkeypatch):
     assert isinstance(client, openai.AsyncOpenAI)
     assert model_name == "BAAI/bge-small-en-v1.5"
     assert str(client.base_url).startswith("http://localhost:8080")
+
+
+def test_get_client_embed_azure_v1_endpoint_uses_resource_root(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv("AZURE_API_VERSION", "test-api-version")
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT",
+        "https://example-resource.openai.azure.com/openai/v1/",
+    )
+
+    client, model_name = get_client_embed("azure-text-embedding-3-small")
+
+    assert type(client) is openai.AzureOpenAI
+    assert str(client.base_url) == "https://example-resource.openai.azure.com/openai/"
+    assert model_name == "text-embedding-3-small"
+
+
+def test_get_client_embed_gemini_sets_timeout(monkeypatch):
+    captured_kwargs = {}
+    fake_client = object()
+
+    def _fake_build_google_genai_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return fake_client
+
+    monkeypatch.setattr(
+        embed_client_module,
+        "build_google_genai_client",
+        _fake_build_google_genai_client,
+    )
+
+    client, model_name = get_client_embed("gemini-embedding-001")
+
+    assert client is fake_client
+    assert model_name == "gemini-embedding-001"
+    assert captured_kwargs == {"timeout_ms": embed_client_module.TIMEOUT * 1000}
+
+
+def test_get_async_client_embed_gemini_sets_timeout(monkeypatch):
+    captured_kwargs = {}
+    fake_client = object()
+
+    def _fake_build_google_genai_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return fake_client
+
+    monkeypatch.setattr(
+        embed_client_module,
+        "build_google_genai_client",
+        _fake_build_google_genai_client,
+    )
+
+    client, model_name = get_async_client_embed("gemini-embedding-001")
+
+    assert client is fake_client
+    assert model_name == "gemini-embedding-001"
+    assert captured_kwargs == {"timeout_ms": embed_client_module.TIMEOUT * 1000}
 
 
 def test_sync_openrouter_embedding_unknown_price_defaults_to_zero(monkeypatch):

@@ -3,6 +3,30 @@
 Shinka runs evolution through `ShinkaEvolveRunner`.
 Use proposal concurrency to control throughput and emulate prior sync behavior.
 
+---
+
+## Interactive Throughput Demo
+
+Use the controls below to change the conceptual worker-pool sizes for:
+
+- proposal sampling (`max_proposal_jobs`)
+- evaluation (`max_evaluation_jobs`)
+- database/finalization (`max_db_workers`)
+
+The demo uses proposal jobs directly:
+
+```text
+proposal_capacity = sampling_workers
+```
+
+This is a teaching model, not a replay of exact runtime data. It is meant to
+show how sampling hands candidates off to evaluation while database workers
+finalize completed generations.
+
+<div id="async-throughput-demo"></div>
+
+---
+
 ## Quick Start
 
 ```python
@@ -34,6 +58,8 @@ In async contexts (for example notebooks/async apps), use:
 await runner.run_async()
 ```
 
+---
+
 ## Concurrency Knobs
 
 - `max_evaluation_jobs`: max concurrent evaluation jobs.
@@ -51,6 +77,8 @@ When sampling/proposal generation is slower than evaluation, set
 This allows a small backlog of proposals to keep evaluation workers fed without
 creating an unbounded queue.
 
+---
+
 ## ShinkaEvolveRunner Parameters
 
 ```python
@@ -65,6 +93,8 @@ ShinkaEvolveRunner(
 )
 ```
 
+---
+
 ## Recommended Settings
 
 | Scale | max_evaluation_jobs | max_proposal_jobs | Notes |
@@ -73,6 +103,8 @@ ShinkaEvolveRunner(
 | Small | 2-6 | eval + 1 | good default if eval waits on proposals |
 | Medium | 5-20 | eval + 1 to eval + 2 | use adaptive oversubscription |
 | Large | 20+ | eval + 2 to eval + 6 | keep bounded with caps |
+
+---
 
 ## Controlled Oversubscription
 
@@ -98,7 +130,7 @@ to keep in flight ahead of those eval workers.
 
 | Key | What it controls | When to raise it | When to lower it |
 |-----|------------------|------------------|------------------|
-| `enable_controlled_oversubscription` | Master on/off switch. If `false`, proposal target stays at `max_evaluation_jobs`. | Rarely needed; keep `true` if proposals are slower than evals. | Turn off if you want predictable sync-like behavior or easier debugging. |
+| `enable_controlled_oversubscription` | Master on/off switch. If `false`, proposal target stays at `max_evaluation_jobs`. Default is `false`. | Turn it on if proposals are slower than evals and workers go idle waiting for new candidates. | Leave it off for predictable sync-like behavior or easier debugging. |
 | `proposal_target_mode` | How Shinka chooses the proposal target. `adaptive` uses observed timings. `fixed` uses `max_evaluation_jobs + proposal_buffer_max`. | Use `adaptive` for most runs. Use `fixed` if workload timing is stable and you want deterministic behavior. | Switch away from `fixed` if it overfills the queue; switch away from `adaptive` if you need simpler tuning. |
 | `proposal_target_min_samples` | Warmup count before adaptive mode trusts observed timing ratios. Before this, Shinka only adds a small buffer. | Raise if early timings are noisy or unrepresentative. | Lower if you want the controller to react sooner. |
 | `proposal_target_ratio_cap` | Upper bound on the observed `sampling_seconds / evaluation_seconds` ratio used by adaptive mode. Prevents extreme spikes from asking for too many proposals. | Raise if proposal generation is consistently much slower than eval and backlog is still too small. | Lower if one slow sample causes too much queued proposal work. |
@@ -165,6 +197,8 @@ runner = ShinkaEvolveRunner(
     max_db_workers=4,
 )
 ```
+
+---
 
 ## Troubleshooting
 

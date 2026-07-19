@@ -2,6 +2,108 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## TBD
+
+### Added
+
+- Added optional Weights & Biases logging with resumable run IDs, per-individual
+  scores, timing and cost metrics, and final run summaries in PR #149. Thanks
+  @anantgar.
+- Added Verilog/SystemVerilog as a first-class evolution target in PR #137,
+  including `.sv` task detection, syntax validation, EVOLVE-BLOCK marker support,
+  failure-artifact rendering, and a self-contained RTLLM example. Thanks @Tyronita.
+- Added startup pricing refresh from models.dev with conditional HTTP caching,
+  validated offline fallback, provider-qualified model discovery, and per-run
+  pricing snapshots in PR #141. The tutorial now includes a no-cost catalog
+  preflight. Thanks @rodmarkun.
+- Added DeepSeek V4 Flash and V4 Pro pricing entries to the DeepSeek LLM pricing catalog.
+- Added controls to reduce evaluation stdout bloat: `JobConfig.eval_verbose` suppresses framework evaluation progress output, and `DatabaseConfig.max_stdout_log_chars` can persist only the tail of `stdout_log` metadata while keeping full logs on disk. Thanks @marcopirazzini.
+- Added SLURM support for `numeric_threads_per_job`, applying numeric-library thread caps consistently across local and SLURM evaluation jobs. Thanks @marcopirazzini.
+
+### Changed
+
+- Removed the automatic Claude Code Review pull-request workflow.
+
+### Fixed
+
+- Fixed Azure OpenAI LLM client construction to use the v1 base URL contract,
+  avoiding doubled `/openai/v1/openai` request paths and 404 responses reported
+  in issue #147.
+- Fixed OpenAI retry handling so ShinkaEvolve respects provider `retry_after` hints from transient Cloudflare/API 5xx responses.
+- Fixed DeepSeek V4 kwargs so ShinkaEvolve omits `temperature` for thinking-mode calls and includes model kwargs in retry error logs.
+- Fixed Claude Opus 4.8 kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for Anthropic and Bedrock calls.
+- Fixed OpenAI reasoning model kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for GPT-5-series Responses API calls.
+- Fixed DeepSeek reasoning model kwargs so ShinkaEvolve passes DeepSeek thinking-mode controls and `reasoning_effort` for V4 models.
+- Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google API hosts and prefer IPv4 when needed.
+- Fixed LLM pricing boolean metadata normalization so reasoning-model flags handle whitespace and mixed CSV value types.
+- Fixed OpenAI Responses parsing to find assistant text by content type while ignoring reasoning/tool text when no message output exists.
+- Fixed quiet evaluation mode so `run_shinka_eval(..., verbose=False)` also suppresses result-save framework stdout while preserving the default verbose behavior.
+
+## 0.0.7 - 2026-06-02
+
+### Added
+
+- Added Gemini 3.5 Flash pricing to the Google LLM pricing catalog.
+- Added Claude Opus 4.8 pricing entries for the Anthropic API and Amazon Bedrock (`us.anthropic.claude-opus-4-8`) in the LLM pricing catalog.
+- Added Wolfram Language as a first-class evolution target: registry entries (`wolfram`, `wl`, `wls`, `mathematica`), code-fence and EVOLVE-BLOCK marker support, and end-to-end coverage in `apply_diff` / `apply_full`.
+- Added EVOLVE-BLOCK marker validation in `shinka.edit.marker_validation`, catching the LLM failure mode where a block-comment-language marker is emitted without its closing delimiter (Wolfram, Markdown), which would silently trap the candidate body inside a comment.
+- Added the `examples/wolfram_gcd_sum` task: deoptimized seed for `S(N) = sum_{i,j in 1..N} GCD(i,j)`. The evaluator calibrates the baseline on every run by timing the seed through the same `RepeatedTiming` harness as the candidate, and the Wolfram-side timeout is configurable via `WOLFRAM_GCD_MAX_SECONDS`.
+- Added Go as a first-class evolution target with `go`/`golang` language registration, `.go` task detection, WebUI failure-artifact support, regression coverage, and the `examples/go_collatz_steps` task.
+
+### Fixed
+
+- Fixed the WebUI dashboard so runs that have completed only the initial generation remain visible instead of being filtered out as empty results.
+- Fixed the WebUI Ensembling tab so single-model Headless runs render visible data points and keep the top y-axis tick labels in view.
+
+## 0.0.6 - 2026-05-03
+
+### Added
+
+- Added Headless CLI-backed LLM provider support via `headless/<agent>` model strings, defaulting to `npx -y @roberttlange/headless` for subscription-backed Codex, Claude, and other local agent calls.
+- Added Headless startup validation, prompt artifacts, usage/cost parsing, and a `examples/sine_approx_headless` task showing API-free mutation calls with embeddings disabled.
+- Added Vertex AI authentication support for Gemini LLM and embedding clients in PR #125. Thanks @wu375.
+- Added async-runner validation for configured LLM and embedding model environment access before run artifacts are created in PR #127. Thanks @RobertTLange.
+- Added GPT-5.5 and GPT-5.5 Pro entries to the OpenAI LLM pricing catalog.
+- Added Fortran evolution support, including language detection, patch application, validation, visualization metadata, and a compiled heat-diffusion example in PR #131.
+
+### Fixed
+
+- Fixed bandit sampler resume from legacy or changed `llm_models` state so saved per-arm arrays are resized, name-aligned when possible, and cost-aware UCB range state remains active after loading `bandit_state.pkl` in PR #130, addressing issue #129.
+- Fixed the WebUI embedding similarity heatmap so hydrated programs with empty embeddings no longer leave the tab stuck on `Loading full embedding data...`, and stale cached full-program data is refetched after summary updates.
+
+## 0.0.5 - 2026-04-22
+
+### Added
+
+- Added the GitHub Pages documentation website for `shinka-evolve`.
+- Added interactive async-throughput and UCB bandit-selection demos to the documentation website.
+- Added dashboard sorting controls to the local WebUI so result cards can be reordered by the active setting.
+- Added a `Hide Plot` / `Show Plot` toggle for the WebUI Throughput tab runtime timeline while keeping the plot visible by default.
+- Added Claude Opus 4.7 pricing entries for the Anthropic API and Amazon Bedrock (`anthropic.claude-opus-4-7`) in the LLM pricing catalog.
+
+### Changed
+
+- Changed `shinka_run` startup output to use a minimal `Shinka CLI` banner while other launch paths keep the full gradient banner.
+- Changed `enable_controlled_oversubscription` to default to `false` across the shared `EvolutionConfig` baseline and packaged Hydra evolution presets.
+- Changed the WebUI meta header to show the active results directory directly in the info panel.
+- Changed the WebUI Throughput tab runtime timeline to scale its height with worker-lane count so each worker keeps a dedicated visible row.
+
+### Fixed
+
+- Fixed async run-time regressions from proposal-failure persistence by keeping terminal failed proposals in `attempt_log` plus `failure.json` artifacts instead of inserting them into the main `programs` table during evolution runs.
+- Fixed the local WebUI to render failed proposal nodes from `attempt_log` plus `failure.json` so failure lineage remains visible without storing synthetic failed programs in the main results database.
+- Fixed failed terminal proposal and prompt-evolution cost accounting so the runtime API budget counter now reflects those spend buckets, and added runtime-timeline metadata for failed proposal nodes rendered from `attempt_log`.
+- Fixed bandit summary tables to preserve readable `local/<model>` and `openrouter/<model>` labels while stripping endpoint and API-key query details from local OpenAI-compatible model labels.
+- Fixed the LLM bandit sampling summary to use the same 120-column table width as the program, patch, and other Rich summaries.
+- Fixed the default `AsymmetricUCB` bandit summary to omit the `div` and `log mean` columns for a more compact Rich table.
+- Fixed the compare view so negative best scores remain visible instead of being clamped away by the WebUI summary logic.
+- Fixed documentation links and metadata URLs to use the deployed GitHub Pages path capitalization (`/ShinkaEvolve/`).
+- Fixed oversubscription regression coverage and docs so adaptive proposal backlog behavior is now clearly opt-in instead of implied by defaults.
+- Fixed Gemini client timeout handling so the shared second-based timeout is converted to the millisecond unit expected by `google-genai`, avoiding accidental `1.2s` read timeouts on long-running requests.
+- Fixed async runtime regressions from sampling/evaluation worker-lane persistence by falling back to timestamp-based throughput lane inference instead of storing those lane IDs in program metadata.
+- Fixed local WebUI cache staleness by disabling browser caching for the main HTML shells (`index.html`, `viz_tree.html`, `compare.html`) served by the local visualization server.
+- Fixed WebUI Throughput tab hydration so `right_tab=throughput` restores reliably after data loads and the generation runtime timeline renders pool stages using timestamp-inferred sampling/evaluation lanes on the current Plotly build.
+
 ## 0.0.4 - 2026-04-06
 
 ### Added

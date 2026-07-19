@@ -9,9 +9,17 @@ You can use:
 - dynamic OpenRouter model IDs
 - local OpenAI-compatible servers via inline endpoint URIs
 
+---
+
 ## Supported Model Name Formats
 
-### 1) Known models (from `pricing.csv`)
+### 1) Known models (from the runtime pricing catalog)
+
+Shinka conditionally refreshes `https://models.dev/api.json` when a new run
+starts. A validated last-known-good cache and the packaged pricing snapshot
+keep offline runs working; resumes reuse their recorded run snapshot. Use
+`SHINKA_PRICING_MODE=offline` to skip the network check or
+`SHINKA_PRICING_MODE=required` to require a valid live response for new runs.
 
 ```yaml
 evo_config:
@@ -69,6 +77,8 @@ CUSTOM_API_KEY=...
 
 Shinka strips `api_key_env` from the runtime base URL before creating the client.
 
+---
+
 ## Local Embeddings
 
 The same inline local format also works for `embedding_model`.
@@ -94,14 +104,18 @@ Common local embedding backends:
 - Ollama OpenAI-compatible endpoint:
   `local/embeddinggemma@http://localhost:11434/v1`
 
+---
+
 ## Notes
 
-- Dynamic OpenRouter/local model IDs are allowed even if not listed in `pricing.csv`.
+- Dynamic OpenRouter/local model IDs are allowed even if not listed in the catalog.
 - If a model has no pricing entry and the provider does not return cost metadata, Shinka records cost as `0.0`.
 - Local OpenAI-compatible backend path currently uses chat-completions style calls.
 - Local embedding backends use the OpenAI-compatible `/v1/embeddings` path.
 - `api_key_env` must reference a single environment variable name, for example `CUSTOM_API_KEY`.
 - Structured output is not supported yet for `local/...@...` models.
+
+---
 
 ## Applies to Which Clients
 

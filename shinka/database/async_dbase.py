@@ -10,8 +10,8 @@ import time
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, replace
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .complexity import analyze_code_metrics
 from .dbase import Program, ProgramDatabase
@@ -21,6 +21,29 @@ logger = logging.getLogger(__name__)
 EXPECTED_ASYNC_DB_EXCEPTIONS = (sqlite3.Error, OSError, RuntimeError, ValueError)
 CODE_ANALYSIS_EXCEPTIONS = (OSError, RuntimeError, SyntaxError, ValueError)
 DB_CLOSE_EXCEPTIONS = (sqlite3.Error, OSError)
+
+
+@dataclass(frozen=True)
+class AddProgramResult:
+    """Outcome of an async program insert.
+
+    ``added`` preserves upstream duplicate-detection semantics, while
+    ``island_copies`` preserves the interactive branch's push-notification
+    contract. Iteration remains compatible with callers that previously
+    consumed the returned island-copy list directly.
+    """
+
+    added: bool
+    island_copies: Tuple[Program, ...] = ()
+
+    def __bool__(self) -> bool:
+        return self.added
+
+    def __iter__(self) -> Iterator[Program]:
+        return iter(self.island_copies)
+
+    def __len__(self) -> int:
+        return len(self.island_copies)
 
 
 # Debugging utilities
@@ -134,7 +157,9 @@ class AsyncProgramDatabase:
 
     def _merge_runtime_metadata_from_db(self, source_db: ProgramDatabase) -> None:
         """Merge key in-memory metadata from a worker DB back to the shared sync DB."""
-        if hasattr(source_db, "last_iteration") and hasattr(self.sync_db, "last_iteration"):
+        if hasattr(source_db, "last_iteration") and hasattr(
+            self.sync_db, "last_iteration"
+        ):
             self.sync_db.last_iteration = max(
                 getattr(self.sync_db, "last_iteration", 0),
                 getattr(source_db, "last_iteration", 0),
@@ -205,14 +230,20 @@ class AsyncProgramDatabase:
             program,
             parent_id=parent_id if parent_id is not None else program.parent_id,
             archive_inspiration_ids=list(
-                archive_insp_ids
-                if archive_insp_ids is not None
-                else program.archive_inspiration_ids
+                (
+                    archive_insp_ids
+                    if archive_insp_ids is not None
+                    else program.archive_inspiration_ids
+                )
+                or []
             ),
             top_k_inspiration_ids=list(
-                top_k_insp_ids
-                if top_k_insp_ids is not None
-                else program.top_k_inspiration_ids
+                (
+                    top_k_insp_ids
+                    if top_k_insp_ids is not None
+                    else program.top_k_inspiration_ids
+                )
+                or []
             ),
             code_diff=code_diff if code_diff is not None else program.code_diff,
             complexity=(
@@ -221,12 +252,16 @@ class AsyncProgramDatabase:
                 else program.complexity
             ),
             embedding=list(
-                code_embedding if code_embedding is not None else program.embedding
+                (code_embedding if code_embedding is not None else program.embedding)
+                or []
             ),
             reasoning_embedding=list(
-                reasoning_embedding
-                if reasoning_embedding is not None
-                else program.reasoning_embedding
+                (
+                    reasoning_embedding
+                    if reasoning_embedding is not None
+                    else program.reasoning_embedding
+                )
+                or []
             ),
             metadata=metadata,
         )
@@ -476,11 +511,11 @@ class AsyncProgramDatabase:
         embed_cost: float = 0.0,
         verbose: bool = False,
         defer_maintenance: bool = False,
-    ) -> List[Program]:
+    ) -> AddProgramResult:
         """Async version of adding a program to the database.
 
-        Returns a list of island copy Programs created during this add
-        (empty if no copies were needed).
+        Returns whether a new row was added together with any island-copy
+        programs created during the insert.
 
         Args:
             program: Program to add
@@ -577,7 +612,10 @@ class AsyncProgramDatabase:
                 self._schedule_embedding_recomputation()
 
             self._debug_track_end(op_id, success=True)
-            return island_copies
+            return AddProgramResult(
+                added=added,
+                island_copies=tuple(island_copies),
+            )
 
         except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
@@ -763,9 +801,7 @@ class AsyncProgramDatabase:
                     try:
                         island_copies = thread_db.get_programs_by_ids(copy_ids)
                     except Exception as exc:
-                        logger.warning(
-                            "Could not read island copies: %s", exc
-                        )
+                        logger.warning("Could not read island copies: %s", exc)
                 return True, island_copies
 
             except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
@@ -810,6 +846,35 @@ class AsyncProgramDatabase:
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self.write_executor, run_maintenance_sync)
+
+    async def update_program_metadata_async(
+        self,
+        program_id: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Persist program metadata on the dedicated writer lane."""
+
+        def update_metadata_sync():
+            thread_db = None
+            try:
+                thread_db = ProgramDatabase(
+                    self.sync_db.config,
+                    embedding_model=self.sync_db.embedding_model,
+                )
+                payload = json.dumps(metadata)
+                thread_db.cursor.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (payload, program_id),
+                )
+                thread_db.conn.commit()
+            finally:
+                if thread_db is not None:
+                    thread_db.close()
+
+        import json
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self.write_executor, update_metadata_sync)
 
     def _schedule_embedding_recomputation(self):
         """Schedule embedding recomputation as a background task."""
@@ -932,7 +997,10 @@ class AsyncProgramDatabase:
             raise
 
     async def sample_inspirations_for_parent_async(
-        self, parent: Program, num_archive_insp: int, num_top_k_insp: int,
+        self,
+        parent: Program,
+        num_archive_insp: int,
+        num_top_k_insp: int,
         excluded_ids: Optional[set] = None,
     ) -> Tuple[List[Program], List[Program]]:
         """Async version of sample_inspirations_for_parent for interactive operations."""
@@ -951,7 +1019,9 @@ class AsyncProgramDatabase:
                     thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                     try:
                         result = thread_db.sample_inspirations_for_parent(
-                            parent, num_archive_insp, num_top_k_insp,
+                            parent,
+                            num_archive_insp,
+                            num_top_k_insp,
                             excluded_ids=excluded_ids,
                         )
                         self._debug_track_end(thread_op_id, success=True)
@@ -1084,6 +1154,60 @@ class AsyncProgramDatabase:
             raise
         except Exception:
             self._debug_track_end(op_id, success=False)
+            raise
+
+    async def record_attempt_event_async(
+        self,
+        generation: int,
+        stage: str,
+        status: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append one attempt lifecycle event to the durable SQLite log."""
+        op_id = self._debug_track_start(
+            "record_attempt_event_async",
+            generation=generation,
+            stage=stage,
+            status=status,
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def record_thread_safe():
+                conn = None
+                try:
+                    conn = sqlite3.connect(
+                        self.sync_db.config.db_path,
+                        check_same_thread=False,
+                        timeout=60.0,
+                    )
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                    conn.execute("PRAGMA busy_timeout = 60000;")
+                    payload = None
+                    if details is not None:
+                        import json
+
+                        payload = json.dumps(details, sort_keys=True)
+                    conn.execute(
+                        """
+                        INSERT INTO attempt_log (
+                            generation, stage, status, details, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (generation, stage, status, payload, time.time()),
+                    )
+                    conn.commit()
+                finally:
+                    if conn is not None:
+                        conn.close()
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(self.executor, record_thread_safe)
+            self._debug_track_end(op_id, success=True)
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async attempt event logging: {e}")
             raise
 
     async def record_generation_event_async(

@@ -21,7 +21,7 @@ def evaluate_with_lm_judge(
     ),
     llm_judge_names=[
         "azure-gpt-4.1",
-        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "us.anthropic.claude-sonnet-4-6-v1:0",
         "gemini-2.5-pro",
     ],
     llm_judge_kwargs=dict(

@@ -2,10 +2,15 @@ from dataclasses import dataclass
 import os
 from typing import Any, Optional, Tuple
 
-from google import genai
 import openai
 
+from shinka.azure_openai_config import (
+    azure_api_version,
+    azure_openai_api_key,
+    azure_resource_endpoint,
+)
 from shinka.env import load_shinka_dotenv
+from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
 from shinka.local_openai_config import (
     parse_local_openai_model,
     resolve_local_openai_api_key,
@@ -71,7 +76,7 @@ def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
 
     raise ValueError(
         f"Embedding model {model_name} not supported. "
-        "Use a known pricing.csv model, 'openrouter/<model>', "
+        "Use a model from the refreshed pricing catalog, 'openrouter/<model>', "
         "or 'local/<model>@http(s)://host[:port]/v1'."
     )
 
@@ -85,13 +90,13 @@ def get_client_embed(model_name: str) -> Tuple[Any, str]:
         client = openai.OpenAI(timeout=TIMEOUT)
     elif provider == "azure":
         client = openai.AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_API_VERSION"),
-            azure_endpoint=os.getenv("AZURE_API_ENDPOINT"),
+            api_key=azure_openai_api_key(),
+            api_version=azure_api_version(),
+            azure_endpoint=azure_resource_endpoint(),
             timeout=TIMEOUT,
         )
     elif provider == "google":
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
     elif provider == "openrouter":
         client = openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
@@ -119,13 +124,13 @@ def get_async_client_embed(model_name: str) -> Tuple[Any, str]:
         client = openai.AsyncOpenAI()
     elif provider == "azure":
         client = openai.AsyncAzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_API_VERSION"),
-            azure_endpoint=os.getenv("AZURE_API_ENDPOINT"),
+            api_key=azure_openai_api_key(),
+            api_version=azure_api_version(),
+            azure_endpoint=azure_resource_endpoint(),
         )
     elif provider == "google":
         # Gemini doesn't have async client yet, will use thread pool in embedding.py
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
     elif provider == "openrouter":
         client = openai.AsyncOpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],

@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from shinka.llm import BanditBase
 from shinka.defaults import (
@@ -41,6 +41,21 @@ class EvolutionConfig:
     embedding_model: Optional[str] = "text-embedding-3-small"
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
+
+    # Optional W&B logging is additive to the existing database/WebUI logging.
+    enable_wandb_logging: bool = False
+    wandb_project: Optional[str] = "shinka-evolve"
+    wandb_entity: Optional[str] = None
+    wandb_group: Optional[str] = None
+    wandb_name: Optional[str] = None
+    wandb_mode: Optional[str] = None
+    wandb_tags: List[str] = field(default_factory=list)
+    wandb_notes: Optional[str] = None
+    wandb_dir: Optional[str] = None
+    wandb_run_id: Optional[str] = None
+    wandb_resume: str = "allow"
+    wandb_config: Dict[str, Any] = field(default_factory=dict)
+
     max_novelty_attempts: int = 3
     code_embed_sim_threshold: float = 0.99
     reasoning_embed_sim_threshold: float = 0.95
@@ -50,7 +65,7 @@ class EvolutionConfig:
     use_text_feedback: bool = False
     max_api_costs: Optional[float] = None
     inspiration_sort_order: str = "ascending"
-    enable_controlled_oversubscription: bool = True
+    enable_controlled_oversubscription: bool = False
     proposal_target_mode: str = "adaptive"
     proposal_target_min_samples: int = 5
     proposal_target_ratio_cap: float = 2.0
@@ -61,8 +76,6 @@ class EvolutionConfig:
     # Interactive steering settings.
     max_proposal_jobs: int = 1
     max_db_workers: int = 4
-    reasoning_embed_sim_threshold: float = 0.95
-    use_reasoning_novelty: bool = False
     eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
     novelty_function_path: Optional[str] = None  # Path to custom novelty.py
     callback_url: Optional[str] = None  # WebSocket push-update URL (evolve-shell)

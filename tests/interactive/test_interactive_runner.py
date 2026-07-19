@@ -94,6 +94,7 @@ def runner(tmp_path):
         r.running_jobs: List = []
         r.active_proposal_tasks: Dict[str, asyncio.Task] = {}
         r.submitted_jobs: Dict[str, Any] = {}
+        r.failed_jobs_for_retry: Dict[str, Any] = {}
         r.completed_generations = 0
         r.next_generation_to_submit = 1
         r.assigned_generations = set()
