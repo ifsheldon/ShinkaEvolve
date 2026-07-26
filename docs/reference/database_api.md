@@ -18,7 +18,7 @@ Controls island topology, archive size, migration, and parent-selection behavior
 
 ## `Program`
 
-Persisted candidate program with lineage, metrics, embeddings, and metadata.
+Persisted candidate program with lineage, metrics, embeddings, metadata, and the post-evaluation `review_priority_level` and `review_priority_data` fields.
 
 ::: shinka.database.dbase.Program
     handler: python
@@ -40,6 +40,9 @@ Main synchronous database interface.
         - add_program
         - get_best_program
         - get_archive
+        - get_review_priority_metrics
+        - set_review_priority_metrics
+        - batch_update_review_priorities
 
 ---
 

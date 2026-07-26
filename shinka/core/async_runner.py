@@ -52,7 +52,7 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
-from shinka.core.novelty_detector import NoveltyDetector, NoveltyLevel
+from shinka.core.review_prioritizer import ReviewPrioritizer, ReviewPriorityLevel
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
     with_pipeline_timing,
@@ -521,9 +521,9 @@ class ShinkaEvolveRunner:
         else:
             self.novelty_judge = None
 
-        # Initialize NoveltyDetector for post-evaluation novelty classification
-        self.novelty_detector = NoveltyDetector(
-            novelty_function_path=evo_config.novelty_function_path,
+        # Assign post-evaluation priorities without affecting automatic search.
+        self.review_prioritizer = ReviewPrioritizer(
+            review_prioritization_function_path=evo_config.review_prioritization_function_path,
             results_dir=str(self.results_dir),
         )
 
@@ -3774,13 +3774,13 @@ class ShinkaEvolveRunner:
         return None
 
     @staticmethod
-    def _apply_novelty_thresholds(
+    def _apply_review_priority_thresholds(
         metrics: Dict[str, Optional[float]],
         settings: Optional[Dict[str, Any]],
     ) -> Tuple[str, Dict[str, Any]]:
-        """Determine novelty level from cached metrics and threshold settings.
+        """Assign a review priority from cached metrics and saved thresholds.
 
-        Returns (novelty_level_str, novelty_data_dict).
+        Returns (review_priority_level_str, review_priority_data_dict).
         """
         # Default settings
         mode = "score_change"
@@ -3807,16 +3807,16 @@ class ShinkaEvolveRunner:
                 "program_score": metrics.get("program_score"),
             }
             if val is None:
-                return NoveltyLevel.NONE.value, display
+                return ReviewPriorityLevel.NONE.value, display
             if val >= sc_high:
                 display["reason"] = f"{val * 100:.1f}% gain (>={sc_high * 100:.0f}%)"
-                return NoveltyLevel.HIGH.value, display
+                return ReviewPriorityLevel.HIGH.value, display
             if val >= sc_moderate:
                 display["reason"] = (
                     f"{val * 100:.1f}% gain (>={sc_moderate * 100:.0f}%)"
                 )
-                return NoveltyLevel.MODERATE.value, display
-            return NoveltyLevel.NONE.value, display
+                return ReviewPriorityLevel.MODERATE.value, display
+            return ReviewPriorityLevel.NONE.value, display
         else:
             # dissimilarity mode
             key = (
@@ -3831,18 +3831,18 @@ class ShinkaEvolveRunner:
                 "dissimilarity": round(val, 4) if val is not None else None,
             }
             if val is None:
-                return NoveltyLevel.NONE.value, display
+                return ReviewPriorityLevel.NONE.value, display
             if val >= ds_high:
                 display["reason"] = (
                     f"Min {ds_embedding} dissimilarity {val:.3f} (>={ds_high})"
                 )
-                return NoveltyLevel.HIGH.value, display
+                return ReviewPriorityLevel.HIGH.value, display
             if val >= ds_moderate:
                 display["reason"] = (
                     f"Min {ds_embedding} dissimilarity {val:.3f} (>={ds_moderate})"
                 )
-                return NoveltyLevel.MODERATE.value, display
-            return NoveltyLevel.NONE.value, display
+                return ReviewPriorityLevel.MODERATE.value, display
+            return ReviewPriorityLevel.NONE.value, display
 
     async def _run_patch_async(
         self,
@@ -4606,18 +4606,18 @@ class ShinkaEvolveRunner:
                 if event_notifier is not None:
                     await event_notifier.notify_generated(program)
 
-                # --- Post-evaluation novelty detection ---
+                # --- Post-evaluation expert review prioritization ---
                 try:
                     logger.info(
-                        "Novelty detection: custom=%s for program %s",
-                        bool(self.novelty_detector._function_path),
+                        "Review prioritization: custom=%s for program %s",
+                        self.review_prioritizer.uses_custom_function,
                         program.id[:8],
                     )
-                    if self.novelty_detector._function_path:
-                        # Custom novelty function: keep existing behaviour
-                        parent_prog_for_novelty = None
+                    if self.review_prioritizer.uses_custom_function:
+                        # Custom prioritization function
+                        parent_program_for_priority = None
                         if job.parent_id:
-                            parent_prog_for_novelty = await self.async_db.get_async(
+                            parent_program_for_priority = await self.async_db.get_async(
                                 job.parent_id
                             )
 
@@ -4629,33 +4629,36 @@ class ShinkaEvolveRunner:
                             if insp:
                                 inspiration_programs.append(insp)
 
-                        novelty_result = self.novelty_detector.detect(
+                        priority_result = self.review_prioritizer.prioritize(
                             program=program,
-                            parent=parent_prog_for_novelty,
+                            parent=parent_program_for_priority,
                             inspirations=inspiration_programs,
                         )
 
-                        if novelty_result.level != NoveltyLevel.NONE:
-                            program.novelty_level = novelty_result.level.value
-                            program.novelty_data = novelty_result.display_data or {}
+                        if priority_result.level != ReviewPriorityLevel.NONE:
+                            program.review_priority_level = priority_result.level.value
+                            program.review_priority_data = (
+                                priority_result.display_data or {}
+                            )
                             loop = asyncio.get_event_loop()
                             await loop.run_in_executor(
                                 None,
-                                self._update_novelty_in_db,
+                                self._update_review_priority_in_db,
                                 program.id,
-                                novelty_result.level.value,
-                                novelty_result.display_data,
+                                priority_result.level.value,
+                                priority_result.display_data,
                             )
                             logger.info(
-                                f"NOVELTY DETECTED [{novelty_result.level.value.upper()}]: "
+                                "REVIEW PRIORITY ASSIGNED "
+                                f"[{priority_result.level.value.upper()}]: "
                                 f"Program {program.id} (gen {program.generation}, "
                                 f"score {program.combined_score})"
                             )
                     else:
-                        # Default detection: compute all 3 metrics and cache
-                        parent_prog_for_novelty = None
+                        # Default prioritization: compute all three signals and cache them.
+                        parent_program_for_priority = None
                         if job.parent_id:
-                            parent_prog_for_novelty = await self.async_db.get_async(
+                            parent_program_for_priority = await self.async_db.get_async(
                                 job.parent_id
                             )
 
@@ -4664,7 +4667,7 @@ class ShinkaEvolveRunner:
                         # main thread and cannot be used from an executor).
                         loop = asyncio.get_event_loop()
 
-                        def _compute_and_cache_novelty():
+                        def _compute_and_cache_priority():
                             from shinka.database.dbase import ProgramDatabase
 
                             thread_db = ProgramDatabase(self.db.config, read_only=False)
@@ -4672,13 +4675,13 @@ class ShinkaEvolveRunner:
                                 code_embs, reasoning_embs = (
                                     thread_db.get_all_embeddings_before(program.id)
                                 )
-                                metrics = self.novelty_detector.compute_all_metrics(
+                                metrics = self.review_prioritizer.compute_priority_metrics(
                                     program=program,
-                                    parent=parent_prog_for_novelty,
+                                    parent=parent_program_for_priority,
                                     all_previous_code_embeddings=code_embs,
                                     all_previous_reasoning_embeddings=reasoning_embs,
                                 )
-                                thread_db.set_novelty_cache(
+                                thread_db.set_review_priority_metrics(
                                     program.id,
                                     metrics["score_change"],
                                     metrics["dissimilarity_code"],
@@ -4689,48 +4692,54 @@ class ShinkaEvolveRunner:
                                 thread_db.close()
 
                         metrics = await loop.run_in_executor(
-                            None, _compute_and_cache_novelty
+                            None, _compute_and_cache_priority
                         )
 
-                        # Read novelty settings (if interactive DB is available)
-                        novelty_settings = None
+                        # Read settings on every assignment so updates apply immediately.
+                        review_prioritization_settings = None
                         try:
                             idb = self._get_interactive_db()
                             if idb is not None:
-                                novelty_settings = idb.read_novelty_settings()
+                                review_prioritization_settings = (
+                                    idb.read_review_prioritization_settings()
+                                )
                         except Exception:
                             pass
 
                         # Add score context for display
                         metrics["program_score"] = round(program.combined_score, 4)
-                        if parent_prog_for_novelty:
+                        if parent_program_for_priority:
                             metrics["parent_score"] = round(
-                                parent_prog_for_novelty.combined_score, 4
+                                parent_program_for_priority.combined_score, 4
                             )
 
-                        # Apply thresholds to determine novelty level
-                        novelty_level, novelty_data = self._apply_novelty_thresholds(
-                            metrics, novelty_settings
+                        (
+                            review_priority_level,
+                            review_priority_data,
+                        ) = self._apply_review_priority_thresholds(
+                            metrics,
+                            review_prioritization_settings,
                         )
 
-                        program.novelty_level = novelty_level
-                        program.novelty_data = novelty_data
+                        program.review_priority_level = review_priority_level
+                        program.review_priority_data = review_priority_data
                         await loop.run_in_executor(
                             None,
-                            self._update_novelty_in_db,
+                            self._update_review_priority_in_db,
                             program.id,
-                            novelty_level,
-                            novelty_data,
+                            review_priority_level,
+                            review_priority_data,
                         )
-                        if novelty_level != NoveltyLevel.NONE.value:
+                        if review_priority_level != ReviewPriorityLevel.NONE.value:
                             logger.info(
-                                f"NOVELTY DETECTED [{novelty_level.upper()}]: "
+                                "REVIEW PRIORITY ASSIGNED "
+                                f"[{review_priority_level.upper()}]: "
                                 f"Program {program.id} (gen {program.generation}, "
                                 f"score {program.combined_score})"
                             )
                 except Exception as e:
                     logger.warning(
-                        "Novelty detection failed for %s: %s",
+                        "Review prioritization failed for %s: %s",
                         program.id[:8],
                         e,
                         exc_info=True,
@@ -6320,18 +6329,18 @@ class ShinkaEvolveRunner:
         # If no code block found, return the whole response
         return response_content.strip()
 
-    def _update_novelty_in_db(
-        self, program_id: str, novelty_level: str, display_data: Optional[Dict]
+    def _update_review_priority_in_db(
+        self, program_id: str, review_priority_level: str, display_data: Optional[Dict]
     ) -> None:
-        """Update novelty fields in the database (runs in executor thread)."""
+        """Update review-priority fields in an executor thread."""
         import sqlite3 as _sqlite3
 
         conn = _sqlite3.connect(str(self.db.config.db_path), timeout=30.0)
         try:
             conn.execute(
-                "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
+                "UPDATE programs SET review_priority_level = ?, review_priority_data = ? WHERE id = ?",
                 (
-                    novelty_level,
+                    review_priority_level,
                     json.dumps(display_data or {}),
                     program_id,
                 ),

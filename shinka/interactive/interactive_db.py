@@ -455,27 +455,28 @@ class InteractiveDatabase:
         finally:
             conn.close()
 
-    # ---- Novelty settings: written/read by backend and runner -----------
+    # ---- Review-prioritization settings: shared by backend and runner ----
 
-    def write_novelty_settings(self, settings: dict) -> None:
-        """Store novelty settings (mode, thresholds) in the interactive_status table."""
+    def write_review_prioritization_settings(self, settings: dict) -> None:
+        """Store review-prioritization mode and thresholds."""
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO interactive_status (key, value, updated_at) "
-                "VALUES ('novelty_settings', ?, ?)",
+                "VALUES ('review_prioritization_settings', ?, ?)",
                 (json.dumps(settings), time.time()),
             )
             conn.commit()
         finally:
             conn.close()
 
-    def read_novelty_settings(self) -> Optional[dict]:
-        """Read novelty settings. Returns None if not set."""
+    def read_review_prioritization_settings(self) -> Optional[dict]:
+        """Read review-prioritization settings, if configured."""
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT value FROM interactive_status WHERE key = 'novelty_settings'"
+                "SELECT value FROM interactive_status "
+                "WHERE key = 'review_prioritization_settings'"
             ).fetchone()
             if not row:
                 return None

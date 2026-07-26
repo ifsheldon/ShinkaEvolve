@@ -50,8 +50,11 @@ Lower-level components for customization:
 - `PromptSampler`
 - `MetaSummarizer`
 - `NoveltyJudge` / `AsyncNoveltyJudge`
+- `ReviewPrioritizer` / `ReviewPriorityLevel` / `ReviewPriorityResult`
 - `SystemPromptEvolver`
 - `SystemPromptSampler`
 
 Available from `shinka.core`. Most integrations should start with the runner +
 config objects above.
+
+`NoveltyJudge` performs pre-evaluation rejection sampling. `ReviewPrioritizer` runs after evaluation and assigns priorities for expert review without changing the automatic search.

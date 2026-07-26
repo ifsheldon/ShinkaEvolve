@@ -37,6 +37,23 @@ slots busy when LLM sampling is slower than the evaluator.
 
 ---
 
+## Novelty Rejection and Review Prioritization
+
+ShinkaEvolve separates automatic novelty rejection from expert attention routing:
+
+- `NoveltyJudge` runs before evaluation. It compares embeddings and can reject a candidate before it enters the evaluated population.
+- `ReviewPrioritizer` runs after evaluation. It assigns a Review Priority from score improvement, code or reasoning dissimilarity, or a custom function.
+
+Review prioritization is observational. It does not reject candidates, alter evaluation scores, or affect parent selection. A custom module must expose `prioritize_for_review(program, parent, inspirations)` and return a `ReviewPriorityLevel` plus optional display data.
+
+Legacy databases must be migrated before they are opened by the current runtime:
+
+```bash
+uv run python -m shinka.tools.compat.migrate_review_prioritization path/to/programs.sqlite
+```
+
+---
+
 ## Runtime Layers
 
 The runtime splits into three major configuration domains:

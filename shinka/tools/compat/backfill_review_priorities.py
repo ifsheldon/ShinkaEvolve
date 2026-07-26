@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Backfill novelty detection for existing ShinkaEvolve databases.
+"""Backfill expert review prioritization for existing ShinkaEvolve databases.
 
-Runs the default novelty detector (score-gain vs. parent) on every program
-that doesn't already have a novelty classification, processing them in
-generation order so parent scores are always available.
+Runs the default review-prioritization function (score gain over the parent)
+on every program that does not already have a review-priority assignment,
+processing them in generation order so parent scores are always available.
 
 Usage::
 
-    python -m shinka.tools.compat.backfill_novelty path/to/shinka.db
-    python -m shinka.tools.compat.backfill_novelty path/to/shinka.db --dry-run
+    python -m shinka.tools.compat.backfill_review_priorities path/to/shinka.db
+    python -m shinka.tools.compat.backfill_review_priorities path/to/shinka.db --dry-run
 
 The original database is backed up to ``<name>.db.bak`` (or
 ``<name>.db.bak.1``, ``.bak.2``, … if earlier backups exist) before any
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -27,10 +26,15 @@ from typing import Any, Dict, List, Optional
 
 # Import directly from the module file to avoid pulling in the full
 # shinka.core.__init__ (which transitively requires yaml, litellm, etc.).
-from shinka.core.novelty_detector import (
-    NoveltyLevel,
+from shinka.core.review_prioritizer import (
     ProgramData,
-    default_detect_novelty,
+    ReviewPrioritizer,
+    ReviewPriorityLevel,
+    default_prioritize_for_review,
+)
+from shinka.database.review_priority_migration import (
+    assert_canonical_review_prioritization_schema,
+    create_sqlite_backup,
 )
 
 
@@ -41,27 +45,33 @@ from shinka.core.novelty_detector import (
 
 def _backup_db(db_path: Path) -> Path:
     """Create a numbered backup of *db_path* and return the backup path."""
-    candidate = db_path.with_suffix(db_path.suffix + ".bak")
-    counter = 0
-    while candidate.exists():
-        counter += 1
-        candidate = db_path.with_suffix(f"{db_path.suffix}.bak.{counter}")
-    shutil.copy2(db_path, candidate)
-    return candidate
+    return create_sqlite_backup(db_path)
 
 
-def _ensure_novelty_columns(conn: sqlite3.Connection) -> None:
-    """Add novelty_level / novelty_data columns if they don't exist."""
-    cur = conn.execute("PRAGMA table_info(programs)")
-    columns = {row[1] for row in cur.fetchall()}
-
-    if "novelty_level" not in columns:
-        conn.execute(
-            "ALTER TABLE programs ADD COLUMN novelty_level TEXT DEFAULT 'none'"
+def _assert_backfill_schema(conn: sqlite3.Connection) -> None:
+    """Require the canonical schema produced by the one-way migration."""
+    assert_canonical_review_prioritization_schema(conn)
+    program_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(programs)")
+    }
+    required_columns = {"review_priority_level", "review_priority_data"}
+    missing_columns = required_columns - program_columns
+    if missing_columns:
+        raise RuntimeError(
+            "Missing canonical program columns "
+            f"{sorted(missing_columns)}. Run the review-prioritization migration first."
         )
-    if "novelty_data" not in columns:
-        conn.execute("ALTER TABLE programs ADD COLUMN novelty_data TEXT")
-    conn.commit()
+    metrics_table = conn.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'review_priority_metrics'
+        """
+    ).fetchone()
+    if metrics_table is None:
+        raise RuntimeError(
+            "Missing review_priority_metrics. "
+            "Run the review-prioritization migration first."
+        )
 
 
 def _json_or_default(raw: Optional[str], default: Any = None) -> Any:
@@ -105,27 +115,22 @@ def _row_to_program_data(row: sqlite3.Row) -> ProgramData:
 def backfill(
     db_path: Path, *, dry_run: bool = False, force: bool = False
 ) -> Dict[str, int]:
-    """Run default novelty detection on all un-classified programs.
+    """Run default expert review prioritization on all unclassified programs.
 
     When *force* is True, re-classify every program (overwriting existing
-    novelty data).  Otherwise programs with ``novelty_level != 'none'``
-    are skipped.
+    review-priority data). Otherwise programs with
+    ``review_priority_level != 'none'`` are skipped.
 
-    Returns a dict with counts: ``total``, ``skipped``, ``none``,
-    ``moderate``, ``high``.
+    Cached prioritization metrics are populated for every program, including
+    programs whose existing priority is preserved.
+
+    Returns a dict with counts: ``total``, ``metrics``, ``skipped``,
+    ``none``, ``moderate``, ``high``.
     """
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
-
-    # Check if novelty columns exist (don't create them in dry-run)
-    cur = conn.execute("PRAGMA table_info(programs)")
-    columns = {row[1] for row in cur.fetchall()}
-    has_novelty_cols = "novelty_level" in columns
-
-    if not dry_run:
-        _ensure_novelty_columns(conn)
+    _assert_backfill_schema(conn)
 
     # Load all programs ordered by generation then timestamp
     rows = conn.execute(
@@ -135,17 +140,21 @@ def backfill(
     # Build a lookup for fast parent access
     programs_by_id: Dict[str, sqlite3.Row] = {row["id"]: row for row in rows}
 
-    stats = {"total": len(rows), "skipped": 0, "none": 0, "moderate": 0, "high": 0}
+    stats = {
+        "total": len(rows),
+        "metrics": 0,
+        "skipped": 0,
+        "none": 0,
+        "moderate": 0,
+        "high": 0,
+    }
     updates: List[tuple] = []
+    metric_updates: List[tuple] = []
+    previous_code_embeddings: List[List[float]] = []
+    previous_reasoning_embeddings: List[List[float]] = []
+    prioritizer = ReviewPrioritizer()
 
     for row in rows:
-        # Skip programs that already have novelty classification
-        if not force:
-            existing_level = row["novelty_level"] if has_novelty_cols else None
-            if existing_level and existing_level != "none":
-                stats["skipped"] += 1
-                continue
-
         program_data = _row_to_program_data(row)
 
         # Look up parent
@@ -164,11 +173,37 @@ def backfill(
                 seen.add(insp_id)
                 inspiration_data.append(_row_to_program_data(programs_by_id[insp_id]))
 
-        level, display_data = default_detect_novelty(
+        metrics = prioritizer.compute_priority_metrics(
+            program_data,
+            parent_data,
+            previous_code_embeddings,
+            previous_reasoning_embeddings,
+        )
+        metric_updates.append(
+            (
+                row["id"],
+                metrics["score_change"],
+                metrics["dissimilarity_code"],
+                metrics["dissimilarity_reasoning"],
+            )
+        )
+        stats["metrics"] += 1
+        if program_data.embedding:
+            previous_code_embeddings.append(program_data.embedding)
+        if program_data.reasoning_embedding:
+            previous_reasoning_embeddings.append(program_data.reasoning_embedding)
+
+        # Preserve existing assignments unless force mode was requested.
+        existing_level = row["review_priority_level"]
+        if not force and existing_level and existing_level != "none":
+            stats["skipped"] += 1
+            continue
+
+        level, display_data = default_prioritize_for_review(
             program_data, parent_data, inspiration_data
         )
 
-        if level != NoveltyLevel.NONE:
+        if level != ReviewPriorityLevel.NONE:
             updates.append(
                 (
                     level.value,
@@ -178,16 +213,29 @@ def backfill(
             )
             stats[level.value] += 1
         else:
-            # In force mode, explicitly reset previously-novel programs to "none"
+            # In force mode, explicitly reset earlier priorities to "none".
             if force:
                 updates.append(("none", None, row["id"]))
             stats["none"] += 1
 
-    if not dry_run and updates:
+    if not dry_run:
         conn.executemany(
-            "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
-            updates,
+            """
+            INSERT OR REPLACE INTO review_priority_metrics
+            (program_id, score_change, dissimilarity_code, dissimilarity_reasoning)
+            VALUES (?, ?, ?, ?)
+            """,
+            metric_updates,
         )
+        if updates:
+            conn.executemany(
+                """
+                UPDATE programs
+                SET review_priority_level = ?, review_priority_data = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
         conn.commit()
 
     conn.close()
@@ -201,10 +249,11 @@ def backfill(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m shinka.tools.compat.backfill_novelty",
+        prog="python -m shinka.tools.compat.backfill_review_priorities",
         description=(
-            "Backfill novelty detection for an existing ShinkaEvolve database. "
-            "Uses the default score-gain detector. Backs up the DB first."
+            "Backfill expert review priorities and cached prioritization metrics "
+            "for a canonical ShinkaEvolve database. Uses the default "
+            "score-improvement signal and backs up the DB first."
         ),
     )
     parser.add_argument(
@@ -220,7 +269,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Re-classify all programs, overwriting existing novelty data.",
+        help="Re-prioritize all programs, overwriting existing priority data.",
     )
     return parser
 
@@ -248,14 +297,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print(f"\nResults ({'DRY RUN' if args.dry_run else 'APPLIED'}):")
     print(f"  Total programs : {stats['total']}")
+    print(f"  Metrics cached : {stats['metrics']}")
     print(f"  Skipped (exist): {stats['skipped']}")
     print(f"  None           : {stats['none']}")
     print(f"  Moderate       : {stats['moderate']}")
     print(f"  High           : {stats['high']}")
 
-    novel = stats["moderate"] + stats["high"]
-    if novel > 0 and not args.dry_run:
-        print(f"\n  {novel} program(s) classified as novel.")
+    prioritized = stats["moderate"] + stats["high"]
+    if prioritized > 0 and not args.dry_run:
+        print(f"\n  {prioritized} program(s) prioritized for review.")
     return 0
 
 

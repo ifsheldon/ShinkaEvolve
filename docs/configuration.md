@@ -72,7 +72,7 @@ so Hydra can use them when no top-level override is supplied.
 | `max_proposal_jobs` | `int` | `1` | Interactive/Hydra fallback for concurrent proposal generation tasks. |
 | `max_db_workers` | `int` | `4` | Interactive/Hydra fallback for asynchronous database workers. |
 | `eval_timeout` | `Optional[int]` | `None` | Per-evaluation timeout in seconds; `None` disables the limit. |
-| `novelty_function_path` | `Optional[str]` | `None` | Optional path to a custom novelty function module. |
+| `review_prioritization_function_path` | `Optional[str]` | `None` | Optional path to a custom Expert Review Prioritization module containing `prioritize_for_review`. |
 | `callback_url` | `Optional[str]` | `None` | WebSocket callback URL; falls back to `EVOLVE_SHELL_URL` when unset. |
 | `enable_controlled_oversubscription` | `bool` | `False` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `str` | `'adaptive'` | Proposal target controller mode: `adaptive` or `fixed`. |
@@ -93,6 +93,8 @@ so Hydra can use them when no top-level override is supplied.
 | `prompt_epsilon` | `float` | `0.1` | Epsilon-greedy exploration for prompt sampler. |
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
+
+`NoveltyJudge` and `ReviewPrioritizer` serve different stages. `NoveltyJudge` performs pre-evaluation rejection sampling. `ReviewPrioritizer` assigns a post-evaluation Review Priority to direct expert attention without changing scores, candidate acceptance, or parent selection.
 
 W&B logging examples:
 

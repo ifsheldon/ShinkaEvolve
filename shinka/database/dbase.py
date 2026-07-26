@@ -16,6 +16,11 @@ from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
 from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
+from shinka.database.review_priority_migration import (
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
+    assert_canonical_review_prioritization_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,9 +202,9 @@ class Program:
     # Meta-prompt evolution: track which system prompt generated this program
     system_prompt_id: Optional[str] = None
 
-    # Novelty detection results (populated by NoveltyDetector after evaluation)
-    novelty_level: str = "none"  # NoveltyLevel enum value: "none", "moderate", "high"
-    novelty_data: Dict[str, Any] = field(default_factory=dict)
+    # Expert review priority assigned after evaluation
+    review_priority_level: str = "none"
+    review_priority_data: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
@@ -367,7 +372,9 @@ class ProgramDatabase:
 
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
-        if not self.read_only:
+        if self.read_only:
+            assert_canonical_review_prioritization_schema(self.conn)
+        else:
             self._create_tables()
         self._load_metadata_from_db()
 
@@ -437,6 +444,7 @@ class ProgramDatabase:
         self.cursor.execute("PRAGMA cache_size = -64000;")  # 64MB cache
         self.cursor.execute("PRAGMA temp_store = MEMORY;")
         self.cursor.execute("PRAGMA foreign_keys = ON;")  # For data integrity
+        assert_canonical_review_prioritization_schema(self.conn)
 
         self.cursor.execute(
             """
@@ -471,8 +479,8 @@ class ProgramDatabase:
                 migration_history TEXT, -- JSON of migration events
                 island_idx INTEGER,  -- Add island_idx to the schema
                 system_prompt_id TEXT,  -- ID of system prompt that generated this program
-                novelty_level TEXT DEFAULT 'none',
-                novelty_data TEXT
+                review_priority_level TEXT DEFAULT 'none',
+                review_priority_data TEXT
             )
             """
         )
@@ -513,6 +521,10 @@ class ProgramDatabase:
             """
         )
         self.cursor.execute(
+            "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
+            (SCHEMA_VERSION_KEY, SCHEMA_VERSION),
+        )
+        self.cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS generation_event_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -551,7 +563,7 @@ class ProgramDatabase:
 
         self.cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS novelty_cache (
+            CREATE TABLE IF NOT EXISTS review_priority_metrics (
                 program_id TEXT PRIMARY KEY,
                 score_change REAL,
                 dissimilarity_code REAL,
@@ -628,27 +640,29 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during compute_time timing migration: {e}")
 
-        # Migration 4: Add novelty_level column if it doesn't exist
+        # Migration 4: Add review_priority_level column if it doesn't exist
         try:
-            if "novelty_level" not in columns:
-                logger.info("Adding novelty_level column to programs table")
+            if "review_priority_level" not in columns:
+                logger.info("Adding review_priority_level column to programs table")
                 self.cursor.execute(
-                    "ALTER TABLE programs ADD COLUMN novelty_level TEXT DEFAULT 'none'"
+                    "ALTER TABLE programs ADD COLUMN review_priority_level TEXT DEFAULT 'none'"
                 )
                 self.conn.commit()
-                logger.info("Successfully added novelty_level column")
+                logger.info("Successfully added review_priority_level column")
         except sqlite3.Error as e:
-            logger.error(f"Error during novelty_level migration: {e}")
+            logger.error(f"Error during review_priority_level migration: {e}")
 
-        # Migration 5: Add novelty_data column if it doesn't exist
+        # Migration 5: Add review_priority_data column if it doesn't exist
         try:
-            if "novelty_data" not in columns:
-                logger.info("Adding novelty_data column to programs table")
-                self.cursor.execute("ALTER TABLE programs ADD COLUMN novelty_data TEXT")
+            if "review_priority_data" not in columns:
+                logger.info("Adding review_priority_data column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN review_priority_data TEXT"
+                )
                 self.conn.commit()
-                logger.info("Successfully added novelty_data column")
+                logger.info("Successfully added review_priority_data column")
         except sqlite3.Error as e:
-            logger.error(f"Error during novelty_data migration: {e}")
+            logger.error(f"Error during review_priority_data migration: {e}")
 
         # Migration 6: Add reasoning_embedding column if it doesn't exist
         try:
@@ -947,7 +961,7 @@ class ProgramDatabase:
         embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
         reasoning_embedding_json = json.dumps(program.reasoning_embedding or [])
         reasoning_pca_2d_json = json.dumps(program.reasoning_embedding_pca_2d or [])
-        novelty_data_json = json.dumps(program.novelty_data or {})
+        review_priority_data_json = json.dumps(program.review_priority_data or {})
         migration_history_json = json.dumps(program.migration_history or [])
 
         # Handle text_feedback - convert to string if it's a list
@@ -977,7 +991,7 @@ class ProgramDatabase:
                     reasoning_embedding_cluster_id,
                     correct, children_count, metadata, island_idx,
                     migration_history, system_prompt_id,
-                    novelty_level, novelty_data)
+                    review_priority_level, review_priority_data)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -1009,8 +1023,8 @@ class ProgramDatabase:
                     program.island_idx,
                     migration_history_json,
                     program.system_prompt_id,
-                    program.novelty_level,
-                    novelty_data_json,
+                    program.review_priority_level,
+                    review_priority_data_json,
                 ),
             )
 
@@ -1250,18 +1264,23 @@ class ProgramDatabase:
         else:
             program_data["reasoning_embedding_pca_2d"] = []
 
-        # Handle novelty data
-        novelty_data_text = program_data.get("novelty_data")
-        if novelty_data_text:
+        # Handle review-priority data
+        review_priority_data_text = program_data.get("review_priority_data")
+        if review_priority_data_text:
             try:
-                program_data["novelty_data"] = json.loads(novelty_data_text)
+                program_data["review_priority_data"] = json.loads(
+                    review_priority_data_text
+                )
             except json.JSONDecodeError:
-                program_data["novelty_data"] = {}
+                program_data["review_priority_data"] = {}
         else:
-            program_data["novelty_data"] = {}
+            program_data["review_priority_data"] = {}
 
-        if "novelty_level" not in program_data or program_data["novelty_level"] is None:
-            program_data["novelty_level"] = "none"
+        if (
+            "review_priority_level" not in program_data
+            or program_data["review_priority_level"] is None
+        ):
+            program_data["review_priority_level"] = "none"
 
         # Handle migration_history
         migration_history_text = program_data.get("migration_history")
@@ -1280,18 +1299,23 @@ class ProgramDatabase:
         # Handle archive status
         program_data["in_archive"] = bool(program_data.get("in_archive", 0))
 
-        # Handle novelty detection fields
-        if "novelty_level" not in program_data or program_data["novelty_level"] is None:
-            program_data["novelty_level"] = "none"
+        # Handle expert review-priority fields
+        if (
+            "review_priority_level" not in program_data
+            or program_data["review_priority_level"] is None
+        ):
+            program_data["review_priority_level"] = "none"
 
-        novelty_data_text = program_data.get("novelty_data")
-        if novelty_data_text and isinstance(novelty_data_text, str):
+        review_priority_data_text = program_data.get("review_priority_data")
+        if review_priority_data_text and isinstance(review_priority_data_text, str):
             try:
-                program_data["novelty_data"] = json.loads(novelty_data_text)
+                program_data["review_priority_data"] = json.loads(
+                    review_priority_data_text
+                )
             except json.JSONDecodeError:
-                program_data["novelty_data"] = {}
-        elif not isinstance(novelty_data_text, dict):
-            program_data["novelty_data"] = {}
+                program_data["review_priority_data"] = {}
+        elif not isinstance(review_priority_data_text, dict):
+            program_data["review_priority_data"] = {}
 
         return Program.from_dict(program_data)
 
@@ -1923,16 +1947,16 @@ class ProgramDatabase:
         # Filter out any None values that might result from row processing errors
         return [p for p in programs if p is not None]
 
-    # ---- Novelty cache helpers -------------------------------------------
+    # ---- Review-priority metric helpers ----------------------------------
 
     @db_retry()
-    def get_novelty_cache(self, program_id: str) -> Optional[Dict[str, Any]]:
-        """Return cached novelty metrics for a program, or None if not cached."""
+    def get_review_priority_metrics(self, program_id: str) -> Optional[Dict[str, Any]]:
+        """Return cached prioritization metrics, or None if not cached."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
         self.cursor.execute(
             "SELECT score_change, dissimilarity_code, dissimilarity_reasoning "
-            "FROM novelty_cache WHERE program_id = ?",
+            "FROM review_priority_metrics WHERE program_id = ?",
             (program_id,),
         )
         row = self.cursor.fetchone()
@@ -1945,18 +1969,18 @@ class ProgramDatabase:
         }
 
     @db_retry()
-    def set_novelty_cache(
+    def set_review_priority_metrics(
         self,
         program_id: str,
         score_change: Optional[float],
         dissimilarity_code: Optional[float],
         dissimilarity_reasoning: Optional[float],
     ) -> None:
-        """Upsert novelty metrics for a program."""
+        """Upsert metrics used to assign a program's review priority."""
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
         self.cursor.execute(
-            "INSERT OR REPLACE INTO novelty_cache "
+            "INSERT OR REPLACE INTO review_priority_metrics "
             "(program_id, score_change, dissimilarity_code, dissimilarity_reasoning) "
             "VALUES (?, ?, ?, ?)",
             (program_id, score_change, dissimilarity_code, dissimilarity_reasoning),
@@ -1964,13 +1988,13 @@ class ProgramDatabase:
         self.conn.commit()
 
     @db_retry()
-    def get_all_novelty_cache(self) -> Dict[str, Dict[str, Any]]:
-        """Return all cached novelty metrics keyed by program_id."""
+    def get_all_review_priority_metrics(self) -> Dict[str, Dict[str, Any]]:
+        """Return all cached prioritization metrics keyed by program ID."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
         self.cursor.execute(
             "SELECT program_id, score_change, dissimilarity_code, dissimilarity_reasoning "
-            "FROM novelty_cache"
+            "FROM review_priority_metrics"
         )
         result: Dict[str, Dict[str, Any]] = {}
         for row in self.cursor.fetchall():
@@ -1982,10 +2006,10 @@ class ProgramDatabase:
         return result
 
     @db_retry()
-    def batch_update_novelty_levels(
+    def batch_update_review_priorities(
         self, updates: List[Tuple[str, str, Dict[str, Any]]]
     ) -> None:
-        """Batch-update novelty_level and novelty_data on the programs table.
+        """Batch-update review_priority_level and review_priority_data on the programs table.
 
         Args:
             updates: List of (program_id, level, data_dict) tuples.
@@ -1994,7 +2018,7 @@ class ProgramDatabase:
             raise ConnectionError("DB not connected.")
         for program_id, level, data_dict in updates:
             self.cursor.execute(
-                "UPDATE programs SET novelty_level = ?, novelty_data = ? WHERE id = ?",
+                "UPDATE programs SET review_priority_level = ?, review_priority_data = ? WHERE id = ?",
                 (level, json.dumps(data_dict), program_id),
             )
         self.conn.commit()
@@ -3478,7 +3502,7 @@ class ProgramDatabase:
                         "public_metrics",
                         "private_metrics",
                         "metadata",
-                        "novelty_data",
+                        "review_priority_data",
                         "archive_inspiration_ids",
                         "top_k_inspiration_ids",
                         "embedding",

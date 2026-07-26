@@ -22,6 +22,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Changed
 
+- Renamed the post-evaluation novelty-detection pipeline to Expert Review Prioritization. This breaking change replaces the Python API, configuration field, database columns, cached-metric table, and custom callable with `ReviewPrioritizer`, `review_prioritization_function_path`, `review_priority_*`, `review_priority_metrics`, and `prioritize_for_review`. Existing databases require `python -m shinka.tools.compat.migrate_review_prioritization`. The pre-evaluation `NoveltyJudge` API remains unchanged.
 - Removed the automatic Claude Code Review pull-request workflow.
 
 ### Fixed

@@ -250,7 +250,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `max_proposal_jobs` | `1` | `int` | Interactive/Hydra fallback for concurrent proposal generation tasks |
 | `max_db_workers` | `4` | `int` | Interactive/Hydra fallback for asynchronous database workers |
 | `eval_timeout` | `None` | `Optional[int]` | Per-evaluation timeout in seconds; `None` disables this limit |
-| `novelty_function_path` | `None` | `Optional[str]` | Optional path to a custom novelty function module |
+| `review_prioritization_function_path` | `None` | `Optional[str]` | Optional path to a custom Expert Review Prioritization module |
 | `callback_url` | `None` | `Optional[str]` | WebSocket callback URL; falls back to `EVOLVE_SHELL_URL` when unset |
 | `enable_controlled_oversubscription` | `False` | `bool` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `'adaptive'` | `str` | Proposal target controller mode (`adaptive` or `fixed`). |
@@ -273,6 +273,26 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `prompt_percentile_recompute_interval` | `20` | `int` | Generations between prompt percentile recomputations |
 
 </details>
+
+### Novelty Rejection and Expert Review Prioritization
+
+ShinkaEvolve uses two independent mechanisms. `NoveltyJudge` runs before evaluation and can reject candidates that are too similar to earlier programs. `ReviewPrioritizer` runs after evaluation and assigns a Review Priority from score improvement, embedding dissimilarity, or a custom `prioritize_for_review` function. Review Priority only directs expert attention. It does not reject candidates, change scores, or affect parent selection.
+
+Databases created with the former post-evaluation `novelty_*` schema require a one-way migration:
+
+```bash
+uv run python -m shinka.tools.compat.migrate_review_prioritization path/to/programs.sqlite
+```
+
+Use `--dry-run` to inspect the planned changes. The modifying command creates a numbered SQLite backup before migration.
+
+For a migrated database created before prioritization metrics were cached, populate `review_priority_metrics` so historical programs can be recomputed when settings change:
+
+```bash
+uv run python -m shinka.tools.compat.backfill_review_priorities path/to/programs.sqlite
+```
+
+This command preserves existing non-`none` assignments, computes cached signals for every program, and backs up the database before writing.
 
 <details>
 <summary><strong>DatabaseConfig Parameters</strong> (click to expand)</summary>

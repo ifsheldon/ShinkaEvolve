@@ -53,8 +53,8 @@ def _is_meta_call(system_msg: str) -> bool:
     """Detect whether this LLM call is a meta-summarization step."""
     meta_markers = [
         "analyzing an individual program",  # Step 1
-        "global insights",                  # Step 2
-        "actionable recommendations",       # Step 3
+        "global insights",  # Step 2
+        "actionable recommendations",  # Step 3
     ]
     lower = system_msg.lower()
     return any(m in lower for m in meta_markers)
@@ -171,9 +171,7 @@ def _mock_query(
 
         # Extract the parent code block — it's the LAST ```python block
         # in the message (eval history comes first, parent code comes last).
-        code_blocks = re.findall(
-            r"```(?:python)?\s*\n(.*?)```", msg, re.DOTALL
-        )
+        code_blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", msg, re.DOTALL)
         parent_code_section = code_blocks[-1] if code_blocks else msg
 
         # Find a line like "range(N)" in the parent code specifically
@@ -394,12 +392,15 @@ AsyncEmbeddingClient.embed_async = _mock_embed_async
 # Must patch both the source module and the importing module's local binding.
 _query_module.query_async = _mock_query_async_standalone
 import shinka.llm.llm as _llm_module  # noqa: E402
+
 _llm_module.query_async = _mock_query_async_standalone
+
 
 # Patch sample_model_kwargs — it tries to resolve model names against pricing.csv
 # which fails for "mock-llm". Replace with a function that returns mock kwargs.
 def _mock_sample_model_kwargs(**_kw):
     return {"model_name": "mock-llm", "temperature": 0.7, "max_output_tokens": 2048}
+
 
 _llm_module.sample_model_kwargs = _mock_sample_model_kwargs
 
@@ -423,10 +424,6 @@ db_config = DatabaseConfig(
 
 def _create_evo_config() -> EvolutionConfig:
     """Create evolution config."""
-    # Resolve path to the mock novelty function next to this script
-    _here = Path(__file__).resolve().parent
-    novelty_path = str(_here / "novelty.py")
-
     return EvolutionConfig(
         task_sys_msg=(
             "You are evolving a simple Python function that returns a number. "
@@ -458,7 +455,9 @@ def _create_evo_config() -> EvolutionConfig:
         init_program_path="initial.py",
         results_dir="results_sandbox",
         eval_timeout=5,  # 5 second timeout — tests timeout vs runtime error
-        # novelty_function_path=novelty_path,  # mock novelty — randomly fires
+        # review_prioritization_function_path=str(
+        #     Path(__file__).resolve().parent / "review_prioritization.py"
+        # ),
         # Push-based UI updates.  Auto-detected from EVOLVE_SHELL_URL env
         # var when launched via start.py --run, or set explicitly here.
         callback_url=os.environ.get("EVOLVE_SHELL_URL", "http://localhost:8000"),

@@ -1,7 +1,14 @@
 from .config import EvolutionConfig
 from .async_runner import ShinkaEvolveRunner
 from .async_interactive_runner import ShinkaEvolveInteractiveRunner
-from .novelty_detector import NoveltyDetector, NoveltyLevel
+from .review_prioritizer import (
+    ProgramData,
+    ReviewPrioritizationFunction,
+    ReviewPrioritizer,
+    ReviewPriorityLevel,
+    ReviewPriorityResult,
+    default_prioritize_for_review,
+)
 from .sampler import PromptSampler
 from .summarizer import MetaSummarizer
 from .novelty_judge import NoveltyJudge
@@ -20,8 +27,12 @@ __all__ = [
     "AsyncNoveltyJudge",
     "ShinkaEvolveRunner",
     "ShinkaEvolveInteractiveRunner",
-    "NoveltyDetector",
-    "NoveltyLevel",
+    "ReviewPrioritizer",
+    "ReviewPriorityLevel",
+    "ReviewPriorityResult",
+    "ReviewPrioritizationFunction",
+    "ProgramData",
+    "default_prioritize_for_review",
     "EvolutionConfig",
     "run_shinka_eval",
     "SystemPromptEvolver",

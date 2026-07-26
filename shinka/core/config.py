@@ -77,7 +77,7 @@ class EvolutionConfig:
     max_proposal_jobs: int = 1
     max_db_workers: int = 4
     eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
-    novelty_function_path: Optional[str] = None  # Path to custom novelty.py
+    review_prioritization_function_path: Optional[str] = None
     callback_url: Optional[str] = None  # WebSocket push-update URL (evolve-shell)
 
     # Meta-prompt evolution settings.
