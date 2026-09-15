@@ -39,6 +39,9 @@ uv run mypy --follow-imports=skip --ignore-missing-imports tests/test_*.py tests
 uv run --with pytest-cov pytest -q -m "not requires_secrets" --cov=shinka --cov-report=term-missing --cov-report=xml:coverage.xml
 ```
 
+Ruff's lint configuration explicitly selects `E4`, `E7`, `E9`, and `F`, preserving the rules enforced before Ruff 0.16 expanded its defaults.
+When working inside the evolvis workspace, install all development and documentation groups with `uv sync --all-packages --all-groups --all-extras --locked` from the workspace root.
+
 If your change touches provider integrations or other secret-backed paths and you have the required credentials configured, also run:
 
 ```bash

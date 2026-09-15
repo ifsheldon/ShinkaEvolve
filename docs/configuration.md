@@ -4,9 +4,9 @@ This document is synced to the current code + config files in this repo.
 
 ## SDK requirements for the interactive fork
 
-The provider-client cache uses constructor arguments supported by OpenAI Python SDK 3.0+ and Anthropic Python SDK 1.0+.
+The provider-client cache uses constructor arguments supported by OpenAI Python SDK 3.0+ and Anthropic Python SDK 1.0+; the current dependency floor for Anthropic is 1.5.0.
 Run `uv sync` after updating the fork so an older locked SDK cannot fail during client construction.
-Gemini requires `google-genai>=2.13,<3`, and optional W&B logging requires `wandb>=0.19`.
+Gemini requires `google-genai>=2.23.0,<3`, and optional W&B logging requires `wandb>=0.30.0`.
 
 Both `ShinkaEvolveRunner` and `ShinkaEvolveInteractiveRunner` keep cached async clients alive for the full run, including interactive pause and keep-alive periods.
 The inherited `run_async()` method owns this lifecycle; the interactive subclass implements `_run_async()` so normal exits and failures release the cache after runner cleanup.

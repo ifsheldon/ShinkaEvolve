@@ -79,13 +79,13 @@ def test_project_metadata_targets_pypi_release():
 def test_httpx_dependency_allows_compatible_updates() -> None:
     dependencies = _read_pyproject()["project"]["dependencies"]
 
-    assert "httpx>=0.27" in dependencies
+    assert "httpx>=0.28.1" in dependencies
 
 
 def test_google_genai_dependency_supports_thinking_levels() -> None:
     dependencies = _read_pyproject()["project"]["dependencies"]
 
-    assert "google-genai>=2.13,<3" in dependencies
+    assert "google-genai>=2.23.0,<3" in dependencies
 
 
 def test_readme_documents_package_install():

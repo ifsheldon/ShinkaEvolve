@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=84.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,7 +25,7 @@ dependencies = [
     "openai>=3.0",
     "numpy",
     "pandas",
-    "anthropic>=1.0",
+    "anthropic>=1.5.0",
     "requests",
     "boto3",
     "pydantic",
@@ -36,7 +36,7 @@ dependencies = [
     "radon",
     "unidiff",
     "dill",
-    "hydra-core==1.3.2",
+    "hydra-core==1.3.7",
     "matplotlib",
     "networkx",
     "seaborn",
@@ -45,13 +45,13 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
-    "google-genai>=2.13,<3",
+    "google-genai>=2.23.0,<3",
     "psutil",
-    "httpx>=0.27"
+    "httpx>=0.28.1"
 ]
 
 [project.optional-dependencies]
-wandb = ["wandb>=0.19"]
+wandb = ["wandb>=0.30.0"]
 
 [project.scripts]
 shinka_launch = "shinka.cli.launch:main"
@@ -84,20 +84,20 @@ shinka = [
 
 [dependency-groups]
 dev = [
-    "pytest>=6.0",
+    "pytest>=9.1.1",
     "pytest-cov",
-    "ruff==0.15.6",
+    "ruff==0.16.7",
     "mypy",
     "black",
     "isort",
     "flake8",
-    "pytest-asyncio>=1.3.0",
+    "pytest-asyncio>=1.4.0",
 ]
 docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.6",
-    "mkdocstrings[python]>=0.30",
-    "pymdown-extensions>=10.15",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
+    "pymdown-extensions>=12.0",
 ]
 
 [tool.pytest.ini_options]
@@ -108,3 +108,7 @@ markers = [
     "models_dev_live: live models.dev catalog contract coverage",
     "requires_secrets: tests that need CI secrets or private credentials",
 ]
+
+[tool.ruff.lint]
+# Preserve the project's enforced rules across Ruff's 0.16 default expansion.
+select = ["E4", "E7", "E9", "F"]
