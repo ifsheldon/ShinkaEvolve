@@ -15,6 +15,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Never, Optional, TypeAlias, cast
 
 from shinka.interactive.payload_schemas import (
@@ -177,16 +178,38 @@ _SQLITE_BUSY_TIMEOUT_MS: int = 10_000
 class InteractiveDatabase:
     """Manages the interactive command/status tables within the evolution SQLite DB."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, read_only: bool = False) -> None:
+        """Open runtime control storage, optionally without creating its tables."""
         self.db_path = db_path
-        self._ensure_tables()
+        self.read_only = read_only
+        if not read_only:
+            self._ensure_tables()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=_SQLITE_CONNECT_TIMEOUT_S)
-        conn.execute("PRAGMA journal_mode=WAL")
+        """Respect read-only browsing without changing the database journal."""
+        if self.read_only:
+            conn = sqlite3.connect(
+                Path(self.db_path).resolve().as_uri() + "?mode=ro",
+                uri=True,
+                timeout=_SQLITE_CONNECT_TIMEOUT_S,
+            )
+        else:
+            conn = sqlite3.connect(self.db_path, timeout=_SQLITE_CONNECT_TIMEOUT_S)
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _has_table(self, conn: sqlite3.Connection, table: str) -> bool:
+        """Completed non-interactive runs may have no control-plane tables."""
+        return (
+            not self.read_only
+            or conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            is not None
+        )
 
     def _ensure_tables(self) -> None:
         conn = self._connect()
@@ -299,6 +322,8 @@ class InteractiveDatabase:
         """Get a single command by ID."""
         conn = self._connect()
         try:
+            if not self._has_table(conn, "interactive_commands"):
+                return None
             r = conn.execute(
                 "SELECT * FROM interactive_commands WHERE id = ?", (cmd_id,)
             ).fetchone()
@@ -321,6 +346,8 @@ class InteractiveDatabase:
         """Return the most recent commands regardless of status."""
         conn = self._connect()
         try:
+            if not self._has_table(conn, "interactive_commands"):
+                return []
             rows = conn.execute(
                 "SELECT * FROM interactive_commands ORDER BY created_at DESC LIMIT ?",
                 (limit,),
@@ -384,6 +411,8 @@ class InteractiveDatabase:
         """Read the current run status (called by backend)."""
         conn = self._connect()
         try:
+            if not self._has_table(conn, "interactive_status"):
+                return None
             row = conn.execute(
                 "SELECT value, updated_at FROM interactive_status WHERE key = 'run_status'"
             ).fetchone()
@@ -409,6 +438,8 @@ class InteractiveDatabase:
         """Read a liveness heartbeat timestamp."""
         conn = self._connect()
         try:
+            if not self._has_table(conn, "interactive_status"):
+                return None
             row = conn.execute(
                 "SELECT updated_at FROM interactive_status WHERE key = ?",
                 (key,),
@@ -450,6 +481,8 @@ class InteractiveDatabase:
         """Return the set of all currently banned program IDs."""
         conn = self._connect()
         try:
+            if not self._has_table(conn, "banned_programs"):
+                return set()
             rows = conn.execute("SELECT program_id FROM banned_programs").fetchall()
             return {r["program_id"] for r in rows}
         finally:
@@ -474,6 +507,8 @@ class InteractiveDatabase:
         """Read review-prioritization settings, if configured."""
         conn = self._connect()
         try:
+            if not self._has_table(conn, "interactive_status"):
+                return None
             row = conn.execute(
                 "SELECT value FROM interactive_status "
                 "WHERE key = 'review_prioritization_settings'"
