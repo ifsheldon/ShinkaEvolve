@@ -11,6 +11,7 @@ import rich.box  # type: ignore
 import rich  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
+from shinka.reasoning import serialized_reasoning_fields
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +395,9 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         """Migrate a single program from source to destination island."""
         # Get current migration history
         self.cursor.execute(
-            "SELECT migration_history FROM programs WHERE id = ?", (migrant_id,)
+            "SELECT migration_history, metadata, reasoning_embedding, reasoning_embedding_pca_2d, "
+            "reasoning_embedding_cluster_id FROM programs WHERE id = ?",
+            (migrant_id,),
         )
         row = self.cursor.fetchone()
         history = (
@@ -413,12 +416,19 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
             }
         )
         history_json = json.dumps(history)
+        reasoning = serialized_reasoning_fields(
+            row["metadata"] if row else None,
+            row["reasoning_embedding"] if row else None,
+            row["reasoning_embedding_pca_2d"] if row else None,
+            row["reasoning_embedding_cluster_id"] if row else None,
+        )
 
         self.cursor.execute(
             """UPDATE programs
-               SET island_idx = ?, migration_history = ?
+               SET island_idx = ?, migration_history = ?, reasoning_embedding = ?,
+                   reasoning_embedding_pca_2d = ?, reasoning_embedding_cluster_id = ?
                WHERE id = ?""",
-            (dest_idx, history_json, migrant_id),
+            (dest_idx, history_json, *reasoning, migrant_id),
         )
         logger.debug(
             f"Migrated program {migrant_id[:8]}... from "
@@ -631,8 +641,14 @@ class CombinedIslandManager:
             embedding_json = json.dumps(program.embedding or [])
             embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
             embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
-            reasoning_embedding_json = json.dumps(program.reasoning_embedding or [])
-            reasoning_pca_2d_json = json.dumps(program.reasoning_embedding_pca_2d or [])
+            reasoning_embedding_json, reasoning_pca_2d_json, reasoning_cluster = (
+                serialized_reasoning_fields(
+                    copy_metadata,
+                    program.reasoning_embedding,
+                    program.reasoning_embedding_pca_2d,
+                    program.reasoning_embedding_cluster_id,
+                )
+            )
             migration_history_json = json.dumps(program.migration_history or [])
             # Insert the copy into the database
             # Handle text_feedback - convert to string if it's a list
@@ -677,7 +693,7 @@ class CombinedIslandManager:
                     program.embedding_cluster_id,
                     reasoning_embedding_json,
                     reasoning_pca_2d_json,
-                    program.reasoning_embedding_cluster_id,
+                    reasoning_cluster,
                     program.correct,
                     program.children_count,
                     metadata_json,
@@ -843,8 +859,14 @@ class CombinedIslandManager:
         embedding_json = source_program.get("embedding") or "[]"
         embedding_pca_2d_json = source_program.get("embedding_pca_2d") or "[]"
         embedding_pca_3d_json = source_program.get("embedding_pca_3d") or "[]"
-        reasoning_embedding_json = source_program.get("reasoning_embedding") or "[]"
-        reasoning_pca_2d_json = source_program.get("reasoning_embedding_pca_2d") or "[]"
+        reasoning_embedding_json, reasoning_pca_2d_json, reasoning_cluster = (
+            serialized_reasoning_fields(
+                metadata,
+                source_program.get("reasoning_embedding"),
+                source_program.get("reasoning_embedding_pca_2d"),
+                source_program.get("reasoning_embedding_cluster_id"),
+            )
+        )
         migration_history_json = source_program.get("migration_history") or "[]"
         text_feedback_str = source_program.get("text_feedback") or ""
 
@@ -885,7 +907,7 @@ class CombinedIslandManager:
                 source_program.get("embedding_cluster_id"),
                 reasoning_embedding_json,
                 reasoning_pca_2d_json,
-                source_program.get("reasoning_embedding_cluster_id"),
+                reasoning_cluster,
                 source_program.get("correct", 0),
                 0,  # Children count will be updated as children are added
                 metadata_json,

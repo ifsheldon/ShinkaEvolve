@@ -861,17 +861,10 @@ class AsyncProgramDatabase:
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
-                payload = json.dumps(metadata)
-                thread_db.cursor.execute(
-                    "UPDATE programs SET metadata = ? WHERE id = ?",
-                    (payload, program_id),
-                )
-                thread_db.conn.commit()
+                thread_db.update_program_metadata(program_id, metadata)
             finally:
                 if thread_db is not None:
                     thread_db.close()
-
-        import json
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self.write_executor, update_metadata_sync)

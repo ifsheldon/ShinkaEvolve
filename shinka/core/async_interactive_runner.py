@@ -324,8 +324,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
         if self.verbose:
             logger.info("Performing final embedding recomputation and meta summary...")
 
-        # Final embedding recomputation
-        if self.embedding_client:
+        # Local reasoning features do not require a provider client.
+        if self.async_db:
             try:
                 await asyncio.wait_for(
                     self.async_db.force_recompute_embeddings_async(),
@@ -691,15 +691,20 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             if user_suggestions:
                 meta_patch_data["human_prompt"] = user_suggestions
 
-            # --- Get code embedding ---------------------------------------
+            # --- Get code and eligible reasoning embeddings ---------------
             logger.info(
-                "Interactive %s gen %d: [6/8] computing code embedding",
+                "Interactive %s gen %d: [6/8] computing embeddings",
                 action_type,
                 generation,
             )
             code_embedding, embed_cost = await self._get_code_embedding_async(
                 exec_fname
             )
+            (
+                reasoning_embedding,
+                reasoning_cost,
+            ) = await self._get_reasoning_embedding_async(meta_patch_data)
+            embed_cost += reasoning_cost
 
             # --- Submit for evaluation (skip novelty check) ---------------
             logger.info(
@@ -727,6 +732,7 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 code_diff=code_diff,
                 meta_patch_data=meta_patch_data,
                 code_embedding=code_embedding,
+                reasoning_embedding=reasoning_embedding,
                 embed_cost=embed_cost,
                 novelty_cost=0.0,
                 proposal_task_id=task_id,

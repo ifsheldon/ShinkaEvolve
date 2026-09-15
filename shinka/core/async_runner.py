@@ -24,6 +24,7 @@ from rich.console import Console
 from rich.table import Table
 import rich.box
 
+from shinka.reasoning import extract_reasoning_text
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
 from shinka.database.async_dbase import AsyncProgramDatabase
 from shinka.database.prompt_dbase import (
@@ -1141,8 +1142,8 @@ class ShinkaEvolveRunner:
                     "🔄 Performing final embedding recomputation and meta summary..."
                 )
 
-            # Force final embedding recomputation before shutdown
-            if self.embedding_client:
+            # Local reasoning features do not require a provider client.
+            if self.async_db:
                 try:
                     if self.verbose:
                         logger.info("Starting final PCA/embedding recomputation...")
@@ -1662,6 +1663,10 @@ class ShinkaEvolveRunner:
     ):
         """Setup initial program in database with metadata."""
         pipeline_started_at = time.time()
+        reasoning_metadata = {
+            "patch_description": patch_description,
+            **(llm_metadata or {}),
+        }
         # Create generation 0 directory structure first
         gen_dir = f"{self.results_dir}/{FOLDER_PREFIX}_0"
         results_dir = f"{gen_dir}/results"
@@ -1696,14 +1701,13 @@ class ShinkaEvolveRunner:
             if self.verbose and code_embedding:
                 logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
 
-            # Compute reasoning embedding only for LLM-generated initial programs
-            # (file-based seed programs have no LLM reasoning to embed)
+            # File-based defaults are placeholders; explicit seed strategies remain eligible.
             reasoning_embedding = None
-            if llm_metadata:
+            if extract_reasoning_text(reasoning_metadata):
                 (
                     reasoning_embedding,
                     re_cost,
-                ) = await self._get_reasoning_embedding_async(llm_metadata)
+                ) = await self._get_reasoning_embedding_async(reasoning_metadata)
                 e_cost += re_cost
 
             # Extract metrics properly like the sync version
@@ -1744,7 +1748,7 @@ class ShinkaEvolveRunner:
                 )
             else:
                 # LLM-generated: llm_metadata already contains structured data
-                base_metadata.update(llm_metadata)
+                base_metadata.update(reasoning_metadata)
 
             base_metadata = with_pipeline_timing(
                 base_metadata,
@@ -1798,12 +1802,12 @@ class ShinkaEvolveRunner:
                 code_embedding, e_cost = None, 0.0
 
             reasoning_embedding = None
-            if llm_metadata:
+            if extract_reasoning_text(reasoning_metadata):
                 try:
                     (
                         reasoning_embedding,
                         re_cost,
-                    ) = await self._get_reasoning_embedding_async(llm_metadata)
+                    ) = await self._get_reasoning_embedding_async(reasoning_metadata)
                     e_cost += re_cost
                 except Exception:
                     pass
@@ -1834,7 +1838,7 @@ class ShinkaEvolveRunner:
                 )
             else:
                 # LLM-generated: llm_metadata already contains structured data
-                base_metadata.update(llm_metadata)
+                base_metadata.update(reasoning_metadata)
 
             base_metadata = with_pipeline_timing(
                 base_metadata,
@@ -4167,12 +4171,7 @@ class ShinkaEvolveRunner:
 
             thread_db = ProgramDatabase(self.db.config)
             try:
-                metadata_json = json.dumps(program.metadata)
-                thread_db.cursor.execute(
-                    "UPDATE programs SET metadata = ? WHERE id = ?",
-                    (metadata_json, program.id),
-                )
-                thread_db.conn.commit()
+                thread_db.update_program_metadata(program.id, program.metadata)
             finally:
                 thread_db.close()
 
@@ -6377,10 +6376,10 @@ class ShinkaEvolveRunner:
         # Report final operations status
         logger.info("-" * 40)
         logger.info("FINAL OPERATIONS STATUS:")
-        if self.embedding_client:
+        if self.async_db:
             logger.info("PCA/Embedding recomputation: COMPLETED")
         else:
-            logger.info("PCA/Embedding recomputation: SKIPPED (no embedding client)")
+            logger.info("PCA/Embedding recomputation: SKIPPED (no database)")
 
         if self.meta_summarizer:
             logger.info("Meta summary generation: COMPLETED")

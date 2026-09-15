@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from shinka.database.dbase import Program
+from shinka.reasoning import minimum_reasoning_distance, reasoning_vector
 
 logger = logging.getLogger(__name__)
 
@@ -298,12 +299,10 @@ class ReviewPrioritizer:
             )
 
         # --- dissimilarity_reasoning ---
-        dissimilarity_reasoning: Optional[float] = None
-        prog_reasoning_embedding = program.reasoning_embedding or []
-        if prog_reasoning_embedding and all_previous_reasoning_embeddings:
-            dissimilarity_reasoning = self.compute_dissimilarity(
-                prog_reasoning_embedding, all_previous_reasoning_embeddings
-            )
+        dissimilarity_reasoning = minimum_reasoning_distance(
+            reasoning_vector(program.metadata, program.reasoning_embedding),
+            all_previous_reasoning_embeddings,
+        )
 
         return {
             "score_change": score_change,
@@ -468,7 +467,10 @@ class ReviewPrioritizer:
             public_metrics=program.public_metrics or {},
             private_metrics=program.private_metrics or {},
             embedding=program.embedding or [],
-            reasoning_embedding=program.reasoning_embedding or [],
+            reasoning_embedding=reasoning_vector(
+                program.metadata, program.reasoning_embedding
+            )
+            or [],
             code_diff=program.code_diff,
             metadata=program.metadata or {},
         )

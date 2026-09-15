@@ -26,6 +26,9 @@ from typing import Any, Dict, List, Optional
 
 # Import directly from the module file to avoid pulling in the full
 # shinka.core.__init__ (which transitively requires yaml, litellm, etc.).
+from shinka.reasoning import reasoning_vector
+from shinka.reasoning_features import historical_reasoning_distances
+
 from shinka.core.review_prioritizer import (
     ProgramData,
     ReviewPrioritizer,
@@ -101,9 +104,13 @@ def _row_to_program_data(row: sqlite3.Row) -> ProgramData:
         embedding=_json_or_default(row["embedding"], []),
         code_diff=row["code_diff"] if "code_diff" in keys else None,
         metadata=_json_or_default(row["metadata"], {}),
-        reasoning_embedding=_json_or_default(row["reasoning_embedding"], [])
-        if "reasoning_embedding" in keys
-        else [],
+        reasoning_embedding=reasoning_vector(
+            _json_or_default(row["metadata"], {}),
+            _json_or_default(row["reasoning_embedding"], [])
+            if "reasoning_embedding" in keys
+            else [],
+        )
+        or [],
     )
 
 
@@ -153,6 +160,17 @@ def backfill(
     previous_code_embeddings: List[List[float]] = []
     previous_reasoning_embeddings: List[List[float]] = []
     prioritizer = ReviewPrioritizer()
+    reasoning_metrics = historical_reasoning_distances(
+        [
+            (
+                row["id"],
+                row["generation"],
+                row["timestamp"],
+                _row_to_program_data(row).reasoning_embedding or None,
+            )
+            for row in rows
+        ]
+    )
 
     for row in rows:
         program_data = _row_to_program_data(row)
@@ -179,6 +197,7 @@ def backfill(
             previous_code_embeddings,
             previous_reasoning_embeddings,
         )
+        metrics["dissimilarity_reasoning"] = reasoning_metrics[row["id"]]
         metric_updates.append(
             (
                 row["id"],

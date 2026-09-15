@@ -208,6 +208,9 @@ class TestReviewPriorityMetrics:
             embedding=[0.0, 1.0],
         )
         program.reasoning_embedding = [0.0, 1.0]
+        program.metadata["patch_description"] = (
+            "Explore a perpendicular search direction"
+        )
 
         metrics = prioritizer.compute_priority_metrics(
             program,

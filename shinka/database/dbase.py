@@ -4,6 +4,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from functools import wraps
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -16,6 +17,13 @@ from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
 from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
+from shinka.reasoning import (
+    normalize_reasoning_fields,
+    reasoning_vector,
+    cosine_similarity,
+    serialized_reasoning_fields,
+)
+from shinka.reasoning_features import recompute_reasoning_features
 from shinka.database.review_priority_migration import (
     SCHEMA_VERSION,
     SCHEMA_VERSION_KEY,
@@ -206,9 +214,27 @@ class Program:
     review_priority_level: str = "none"
     review_priority_data: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Enforce reasoning eligibility for direct construction and island copies."""
+        self.normalize_reasoning()
+
+    def normalize_reasoning(self) -> None:
+        """Clear unusable reasoning data before persistence or serialization."""
+        data = {
+            "metadata": self.metadata,
+            "reasoning_embedding": self.reasoning_embedding,
+            "reasoning_embedding_pca_2d": self.reasoning_embedding_pca_2d,
+            "reasoning_embedding_cluster_id": self.reasoning_embedding_cluster_id,
+        }
+        normalize_reasoning_fields(data)
+        self.reasoning_embedding = data["reasoning_embedding"]
+        self.reasoning_embedding_pca_2d = data["reasoning_embedding_pca_2d"]
+        self.reasoning_embedding_cluster_id = data["reasoning_embedding_cluster_id"]
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
         data = asdict(self)
+        normalize_reasoning_fields(data)
         return clean_nan_values(data)
 
     @classmethod
@@ -892,6 +918,31 @@ class ProgramDatabase:
         return self._program_from_row(row) if row else None
 
     @db_retry()
+    def update_program_metadata(
+        self, program_id: str, metadata: Dict[str, Any]
+    ) -> None:
+        """Atomically keep reasoning fields consistent with updated source metadata."""
+        if self.read_only:
+            raise PermissionError("Cannot update program metadata in read-only mode.")
+        if self.conn is None:
+            raise ConnectionError("DB not connected.")
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                "SELECT reasoning_embedding, reasoning_embedding_pca_2d, reasoning_embedding_cluster_id "
+                "FROM programs WHERE id = ?",
+                (program_id,),
+            ).fetchone()
+            if row is None:
+                return
+            reasoning = serialized_reasoning_fields(metadata, *row)
+            self.conn.execute(
+                "UPDATE programs SET metadata = ?, reasoning_embedding = ?, "
+                "reasoning_embedding_pca_2d = ?, reasoning_embedding_cluster_id = ? WHERE id = ?",
+                (json.dumps(metadata), *reasoning, program_id),
+            )
+
+    @db_retry()
     def add(
         self,
         program: Program,
@@ -925,6 +976,7 @@ class ProgramDatabase:
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
 
+        program.normalize_reasoning()
         self.island_manager.assign_island(program)
 
         # Calculate complexity if not pre-set (or if default 0.0)
@@ -2178,7 +2230,7 @@ class ProgramDatabase:
         ref_ts = ref["timestamp"]
 
         self.cursor.execute(
-            "SELECT embedding, reasoning_embedding FROM programs "
+            "SELECT embedding, reasoning_embedding, metadata FROM programs "
             "WHERE (generation < ? OR (generation = ? AND timestamp < ?)) "
             "AND id != ?",
             (ref_gen, ref_gen, ref_ts, program_id),
@@ -2202,8 +2254,10 @@ class ProgramDatabase:
                         if isinstance(r_emb_raw, str)
                         else r_emb_raw
                     )
-                    if isinstance(r_emb, list) and len(r_emb) > 0:
-                        reasoning_embeddings.append(r_emb)
+                    metadata = json.loads(row["metadata"] or "{}")
+                    vector = reasoning_vector(metadata, r_emb)
+                    if vector is not None:
+                        reasoning_embeddings.append(vector)
                 except (json.JSONDecodeError, TypeError):
                     pass
         return code_embeddings, reasoning_embeddings
@@ -3290,78 +3344,48 @@ class ProgramDatabase:
 
     @db_retry()
     def compute_reasoning_similarity_thread_safe(
-        self, vec: List[float], island_idx: int
+        self, embedding: List[float], island_idx: int
     ) -> List[float]:
-        """Thread-safe reasoning embedding similarity computation."""
-        conn = None
+        """Compare only eligible, compatible stored reasoning vectors."""
+        conn = sqlite3.connect(self.config.db_path, timeout=60.0)
         try:
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT reasoning_embedding FROM programs "
-                "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
-                "AND reasoning_embedding != '[]'",
+            rows = conn.execute(
+                "SELECT metadata, reasoning_embedding FROM programs WHERE island_idx = ?",
                 (island_idx,),
-            )
-            rows = cursor.fetchall()
-
-            if not rows:
-                return []
-
-            similarities = []
-            for row in rows:
-                db_embedding = json.loads(row["reasoning_embedding"])
-                if db_embedding:
-                    sim = self._cosine_similarity(vec, db_embedding)
-                    similarities.append(sim)
-            return similarities
-
-        except Exception as e:
-            logger.error(f"Thread-safe reasoning similarity computation failed: {e}")
-            raise
+            ).fetchall()
+            return self._reasoning_similarities(embedding, rows)
         finally:
-            if conn:
-                conn.close()
+            conn.close()
+
+    @staticmethod
+    def _reasoning_similarities(
+        embedding: List[float], rows: Iterable[Sequence[Optional[str]]]
+    ) -> List[float]:
+        """Decode the SQL boundary before applying the shared validity policy."""
+        similarities = []
+        for metadata_raw, vector_raw in rows:
+            try:
+                metadata = json.loads(metadata_raw or "{}")
+                vector = reasoning_vector(metadata, json.loads(vector_raw or "[]"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            similarity = cosine_similarity(embedding, vector)
+            if similarity is not None:
+                similarities.append(similarity)
+        return similarities
 
     @db_retry()
     def compute_reasoning_similarity(
         self, reasoning_embedding: List[float], island_idx: int
     ) -> List[float]:
-        """Compute similarity between a reasoning embedding and all programs on an island."""
+        """Compare eligible reasoning vectors without synthetic missing scores."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
-
-        if not reasoning_embedding:
-            return []
-
-        self.cursor.execute(
-            "SELECT id, reasoning_embedding FROM programs "
-            "WHERE island_idx = ? AND reasoning_embedding IS NOT NULL "
-            "AND reasoning_embedding != '[]'",
+        rows = self.cursor.execute(
+            "SELECT metadata, reasoning_embedding FROM programs WHERE island_idx = ?",
             (island_idx,),
-        )
-        rows = self.cursor.fetchall()
-
-        if not rows:
-            return []
-
-        similarity_scores = []
-        for row in rows:
-            try:
-                embedding = json.loads(row["reasoning_embedding"])
-                if embedding:
-                    similarity = self._cosine_similarity(reasoning_embedding, embedding)
-                    similarity_scores.append(similarity)
-                else:
-                    similarity_scores.append(0.0)
-            except json.JSONDecodeError:
-                similarity_scores.append(0.0)
-
-        return similarity_scores
+        ).fetchall()
+        return self._reasoning_similarities(reasoning_embedding, rows)
 
     @db_retry()
     def _recompute_embeddings_and_clusters(self, num_clusters: int = 4):
@@ -3369,6 +3393,8 @@ class ProgramDatabase:
             return
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
+
+        self._recompute_reasoning_clusters(num_clusters, self.conn)
 
         self.cursor.execute(
             "SELECT id, embedding FROM programs "
@@ -3440,61 +3466,11 @@ class ProgramDatabase:
             self.conn.rollback()
             logger.error("Failed to update programs with new embedding features: %s", e)
 
-    def _recompute_reasoning_clusters(self, num_clusters, cursor, conn):
-        """Recompute PCA 2D and GMM clustering for reasoning embeddings."""
-        cursor.execute(
-            "SELECT id, reasoning_embedding FROM programs "
-            "WHERE reasoning_embedding IS NOT NULL AND reasoning_embedding != '[]'"
-        )
-        r_rows = cursor.fetchall()
-
-        if len(r_rows) < num_clusters:
-            return
-
-        r_program_ids = [row["id"] for row in r_rows]
-        r_embeddings = [json.loads(row["reasoning_embedding"]) for row in r_rows]
-        embedding_client = self._ensure_embedding_client()
-        if embedding_client is None:
-            return
-
-        try:
-            logger.info(
-                "Recomputing reasoning embedding PCA/clusters for %s programs.",
-                len(r_program_ids),
-            )
-            r_reduced_2d = embedding_client.get_dim_reduction(
-                r_embeddings, method="pca", dims=2
-            )
-            r_cluster_ids = embedding_client.get_embedding_clusters(
-                r_embeddings, num_clusters=num_clusters
-            )
-        except Exception as e:
-            logger.error(f"Failed to recompute reasoning embedding features: {e}")
-            return
-
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            for i, program_id in enumerate(r_program_ids):
-                r_pca_2d_json = json.dumps(r_reduced_2d[i].tolist())
-                r_cluster_id = int(r_cluster_ids[i])
-
-                cursor.execute(
-                    """
-                    UPDATE programs
-                    SET reasoning_embedding_pca_2d = ?,
-                        reasoning_embedding_cluster_id = ?
-                    WHERE id = ?
-                    """,
-                    (r_pca_2d_json, r_cluster_id, program_id),
-                )
-            conn.commit()
-            logger.info(
-                "Successfully updated reasoning embedding features for %s programs.",
-                len(r_program_ids),
-            )
-        except Exception as e:
-            conn.rollback()
-            logger.error("Failed to update reasoning embedding features: %s", e)
+    def _recompute_reasoning_clusters(
+        self, num_clusters: int, conn: sqlite3.Connection
+    ) -> None:
+        """Refresh reasoning features locally, independently of code embeddings."""
+        recompute_reasoning_features(conn, num_clusters)
 
     @db_retry()
     def _recompute_embeddings_and_clusters_thread_safe(self, num_clusters: int = 4):
@@ -3512,6 +3488,8 @@ class ProgramDatabase:
             )
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+
+            self._recompute_reasoning_clusters(num_clusters, conn)
 
             cursor.execute(
                 "SELECT id, embedding FROM programs "
@@ -3596,9 +3574,6 @@ class ProgramDatabase:
                 )
                 raise  # Re-raise exception
 
-            # --- Reasoning embeddings PCA/clustering ---
-            self._recompute_reasoning_clusters(num_clusters, cursor, conn)
-
         except Exception as e:
             logger.error(f"Thread-safe embedding recomputation failed: {e}")
             raise  # Re-raise exception
@@ -3638,6 +3613,8 @@ class ProgramDatabase:
                         "embedding",
                         "embedding_pca_2d",
                         "embedding_pca_3d",
+                        "reasoning_embedding",
+                        "reasoning_embedding_pca_2d",
                         "migration_history",
                     ] and isinstance(value, str):
                         try:
@@ -3695,6 +3672,8 @@ class ProgramDatabase:
                     "embedding",
                     "embedding_pca_2d",
                     "embedding_pca_3d",
+                    "reasoning_embedding",
+                    "reasoning_embedding_pca_2d",
                     "migration_history",
                 ]
                 for key, value in program_data.items():

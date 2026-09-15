@@ -12,6 +12,7 @@ from pathlib import Path
 from .apply_diff import apply_diff_patch
 from .apply_full import apply_full_patch
 from shinka.utils.languages import normalize_language
+from shinka.reasoning import extract_reasoning_text, validated_vector
 from shinka.utils.wolfram import (
     build_wolframscript_argv,
     escape_wolfram_string,
@@ -398,37 +399,6 @@ async def get_code_embedding_async(
         return None, 0.0
 
 
-def extract_reasoning_text(metadata: dict) -> Optional[str]:
-    """Extract reasoning text from program metadata for embedding.
-
-    Combines patch_description and LLM thought into a single string.
-    Returns None if no meaningful text is found.
-    """
-    patch_description = metadata.get("patch_description")
-    llm_result = metadata.get("llm_result")
-    thought = None
-    if isinstance(llm_result, dict):
-        thought = llm_result.get("thought")
-
-    # Ensure we have string values
-    if isinstance(patch_description, str) and patch_description.strip():
-        desc = patch_description.strip()
-    else:
-        desc = None
-
-    if isinstance(thought, str) and thought.strip():
-        tht = thought.strip()
-    else:
-        tht = None
-
-    if not desc and not tht:
-        return None
-
-    if desc and tht:
-        return f"{desc}\n\n{tht}"
-    return desc or tht
-
-
 async def get_reasoning_embedding_async(
     metadata: dict, embedding_client, max_chars: int = 10000
 ) -> Tuple[Optional[list], float]:
@@ -460,7 +430,7 @@ async def get_reasoning_embedding_async(
                 None, embedding_client.get_embedding, text
             )
 
-        return embedding, cost
+        return validated_vector(embedding), cost
 
     except Exception as e:
         logger.error(f"Error generating reasoning embedding: {e}")
