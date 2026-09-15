@@ -20,14 +20,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from shinka.edit.async_apply import extract_reasoning_text
-from shinka.embed.embedding import EmbeddingClient
+from shinka.reasoning import extract_reasoning_text, reasoning_vector, validated_vector
+from shinka.reasoning_features import (
+    recompute_reasoning_features,
+    refresh_reasoning_metrics,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +44,13 @@ def _backup_db(db_path: Path) -> Path:
     while candidate.exists():
         counter += 1
         candidate = db_path.with_suffix(f"{db_path.suffix}.bak.{counter}")
-    shutil.copy2(db_path, candidate)
+    source = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+    destination = sqlite3.connect(candidate)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
     return candidate
 
 
@@ -54,9 +62,7 @@ def _ensure_reasoning_columns(conn: sqlite3.Connection) -> None:
     if "reasoning_embedding" not in columns:
         conn.execute("ALTER TABLE programs ADD COLUMN reasoning_embedding TEXT")
     if "reasoning_embedding_pca_2d" not in columns:
-        conn.execute(
-            "ALTER TABLE programs ADD COLUMN reasoning_embedding_pca_2d TEXT"
-        )
+        conn.execute("ALTER TABLE programs ADD COLUMN reasoning_embedding_pca_2d TEXT")
     if "reasoning_embedding_cluster_id" not in columns:
         conn.execute(
             "ALTER TABLE programs ADD COLUMN reasoning_embedding_cluster_id INTEGER"
@@ -75,59 +81,10 @@ def _json_or_default(raw: Optional[str], default=None):
 
 
 def _recompute_pca_and_clusters(conn: sqlite3.Connection) -> int:
-    """Recompute PCA 2D and GMM clusters for all reasoning embeddings."""
-    try:
-        import numpy as np
-        from sklearn.decomposition import PCA
-        from sklearn.mixture import GaussianMixture
-    except ImportError:
-        print(
-            "Warning: scikit-learn not installed. "
-            "Skipping PCA/cluster recomputation.",
-            file=sys.stderr,
-        )
-        return 0
-
-    rows = conn.execute(
-        "SELECT id, reasoning_embedding FROM programs "
-        "WHERE reasoning_embedding IS NOT NULL"
-    ).fetchall()
-
-    ids: List[str] = []
-    embeddings: List[List[float]] = []
-    for row in rows:
-        emb = _json_or_default(row["reasoning_embedding"], [])
-        if isinstance(emb, list) and len(emb) > 0:
-            ids.append(row["id"])
-            embeddings.append(emb)
-
-    if len(embeddings) < 2:
-        return 0
-
-    matrix = np.array(embeddings)
-
-    # PCA 2D
-    n_components = min(2, matrix.shape[0], matrix.shape[1])
-    pca = PCA(n_components=n_components)
-    pca_2d = pca.fit_transform(matrix)
-
-    # GMM clustering
-    n_clusters = min(max(2, len(embeddings) // 5), 10)
-    gmm = GaussianMixture(n_components=n_clusters, random_state=42)
-    cluster_ids = gmm.fit_predict(matrix)
-
-    updates = []
-    for i, prog_id in enumerate(ids):
-        coords = pca_2d[i].tolist()
-        updates.append((json.dumps(coords), int(cluster_ids[i]), prog_id))
-
-    conn.executemany(
-        "UPDATE programs SET reasoning_embedding_pca_2d = ?, "
-        "reasoning_embedding_cluster_id = ? WHERE id = ?",
-        updates,
-    )
-    conn.commit()
-    return len(updates)
+    """Refresh shared local projections and existing reasoning-distance cache."""
+    count = recompute_reasoning_features(conn)
+    refresh_reasoning_metrics(conn)
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -152,118 +109,116 @@ def backfill(
     Returns a dict with counts: ``total``, ``skipped``, ``embedded``,
     ``no_text``, ``errors``, ``total_cost``, ``pca_updated``.
     """
-    conn = sqlite3.connect(str(db_path), timeout=30)
+    if batch_size < 1 or max_chars < 1:
+        raise ValueError("batch_size and max_chars must be positive.")
+    conn = sqlite3.connect(
+        db_path.resolve().as_uri() + ("?mode=ro" if dry_run else "?mode=rw"),
+        uri=True,
+        timeout=30,
+    )
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-
-    if not dry_run:
-        _ensure_reasoning_columns(conn)
-
-    # Check if reasoning_embedding column exists (may not in dry-run on old DBs)
-    cur = conn.execute("PRAGMA table_info(programs)")
-    columns = {row[1] for row in cur.fetchall()}
-    has_reasoning_col = "reasoning_embedding" in columns
-
-    if has_reasoning_col:
+    try:
+        if not dry_run:
+            _ensure_reasoning_columns(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(programs)")}
+        embedding_column = (
+            "reasoning_embedding"
+            if "reasoning_embedding" in columns
+            else "NULL AS reasoning_embedding"
+        )
         rows = conn.execute(
-            "SELECT id, metadata, reasoning_embedding FROM programs "
-            "ORDER BY generation ASC, timestamp ASC"
+            f"SELECT id, metadata, {embedding_column} FROM programs ORDER BY generation, timestamp, id"
         ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT id, metadata FROM programs "
-            "ORDER BY generation ASC, timestamp ASC"
-        ).fetchall()
-
-    stats: Dict[str, object] = {
-        "total": len(rows),
-        "skipped": 0,
-        "embedded": 0,
-        "no_text": 0,
-        "errors": 0,
-        "total_cost": 0.0,
-        "pca_updated": 0,
-    }
-
-    # Collect programs that need embedding
-    to_embed: List[tuple] = []  # (id, text)
-    for row in rows:
-        if not force and has_reasoning_col:
+        stats: Dict[str, object] = {
+            "total": len(rows),
+            "skipped": 0,
+            "embedded": 0,
+            "no_text": 0,
+            "errors": 0,
+            "total_cost": 0.0,
+            "pca_updated": 0,
+            "cleared": 0,
+        }
+        to_embed: List[tuple[str, str]] = []
+        to_clear: list[tuple[str]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError(
+                    f"Unclassifiable metadata for program {row['id']}."
+                ) from exc
+            if not isinstance(metadata, dict):
+                raise ValueError(f"Metadata must be an object for program {row['id']}.")
             existing = _json_or_default(row["reasoning_embedding"], [])
-            if isinstance(existing, list) and len(existing) > 0:
+            vector = reasoning_vector(metadata, existing)
+            text = extract_reasoning_text(metadata)
+            if vector is None:
+                to_clear.append((row["id"],))
+                if existing or row["reasoning_embedding"] not in (
+                    None,
+                    "",
+                    "[]",
+                    "null",
+                ):
+                    stats["cleared"] = int(stats["cleared"]) + 1
+            if text is None:
+                stats["no_text"] = int(stats["no_text"]) + 1
+            elif vector is not None and not force:
                 stats["skipped"] = int(stats["skipped"]) + 1
-                continue
-
-        metadata = _json_or_default(row["metadata"], {})
-        text = extract_reasoning_text(metadata)
-        if not text:
-            stats["no_text"] = int(stats["no_text"]) + 1
-            continue
-
-        if len(text) > max_chars:
-            text = text[:max_chars]
-
-        to_embed.append((row["id"], text))
-
-    if dry_run:
-        stats["embedded"] = len(to_embed)
-        conn.close()
-        return stats
-
-    if not to_embed:
-        # Still recompute PCA if forced
-        if force:
-            stats["pca_updated"] = _recompute_pca_and_clusters(conn)
-        conn.close()
-        return stats
-
-    # Initialize embedding client
-    client = EmbeddingClient(model_name=model_name)
-    total_cost = 0.0
-
-    # Process in batches
-    for batch_start in range(0, len(to_embed), batch_size):
-        batch = to_embed[batch_start : batch_start + batch_size]
-        ids = [item[0] for item in batch]
-        texts = [item[1] for item in batch]
-
-        try:
-            embeddings, cost = client.get_embedding(texts)
-            total_cost += cost
-
-            if not isinstance(embeddings[0], list):
-                # Single result returned as flat list
-                embeddings = [embeddings]
-
-            for prog_id, emb in zip(ids, embeddings):
-                conn.execute(
-                    "UPDATE programs SET reasoning_embedding = ? WHERE id = ?",
-                    (json.dumps(emb), prog_id),
-                )
-            stats["embedded"] = int(stats["embedded"]) + len(batch)
-
-        except Exception as e:
-            print(
-                f"Error embedding batch starting at {batch_start}: {e}",
-                file=sys.stderr,
+            else:
+                to_embed.append((row["id"], text[:max_chars]))
+        if dry_run:
+            stats["embedded"] = len(to_embed)
+            return stats
+        with conn:
+            conn.executemany(
+                "UPDATE programs SET reasoning_embedding = '[]', reasoning_embedding_pca_2d = '[]', "
+                "reasoning_embedding_cluster_id = NULL WHERE id = ?",
+                to_clear,
             )
-            stats["errors"] = int(stats["errors"]) + len(batch)
+        if to_embed:
+            # Provider import and construction happen only after the dry-run return.
+            from shinka.embed.embedding import EmbeddingClient
 
-        conn.commit()
-
-        done = min(batch_start + batch_size, len(to_embed))
-        print(f"  Progress: {done}/{len(to_embed)} programs embedded", end="\r")
-
-    print()  # newline after progress
-
-    stats["total_cost"] = total_cost
-
-    # Recompute PCA and clusters
-    stats["pca_updated"] = _recompute_pca_and_clusters(conn)
-
-    conn.close()
-    return stats
+            client = EmbeddingClient(model_name=model_name)
+            for batch_start in range(0, len(to_embed), batch_size):
+                batch = to_embed[batch_start : batch_start + batch_size]
+                ids, texts = zip(*batch)
+                try:
+                    embeddings, cost = client.get_embedding(list(texts))
+                    stats["total_cost"] = float(stats["total_cost"]) + cost
+                    if len(batch) == 1 and validated_vector(embeddings) is not None:
+                        embeddings = [embeddings]
+                    if not isinstance(embeddings, list) or len(embeddings) != len(
+                        batch
+                    ):
+                        raise ValueError(
+                            "Embedding response does not match the requested batch size."
+                        )
+                    if any(validated_vector(vector) is None for vector in embeddings):
+                        raise ValueError(
+                            "Embedding response contains an unusable vector."
+                        )
+                    with conn:
+                        conn.executemany(
+                            "UPDATE programs SET reasoning_embedding = ? WHERE id = ?",
+                            [
+                                (json.dumps(vector), program_id)
+                                for program_id, vector in zip(ids, embeddings)
+                            ],
+                        )
+                    stats["embedded"] = int(stats["embedded"]) + len(batch)
+                except Exception as exc:
+                    print(
+                        f"Embedding batch at {batch_start} failed ({type(exc).__name__}).",
+                        file=sys.stderr,
+                    )
+                    stats["errors"] = int(stats["errors"]) + len(batch)
+        stats["pca_updated"] = _recompute_pca_and_clusters(conn)
+        return stats
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +304,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"  Embedding cost   : ${stats['total_cost']:.4f}")
         print(f"  PCA/clusters     : {stats['pca_updated']} programs updated")
 
-    return 0
+    return 1 if stats["errors"] else 0
 
 
 if __name__ == "__main__":
