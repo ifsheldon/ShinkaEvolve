@@ -1,4 +1,4 @@
-from typing import List, Union, Optional
+from typing import Any, List, Union, Optional
 import random
 from .providers.pricing import (
     is_reasoning_model,
@@ -6,6 +6,10 @@ from .providers.pricing import (
     requires_reasoning,
 )
 from .providers.model_resolver import resolve_model_backend
+from .constants import (
+    GEMINI_THINKING_LEVEL_BY_EFFORT,
+    GEMINI_THINKING_LEVEL_MODELS,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,6 +28,7 @@ NO_TEMPERATURE_MODELS = {
     "claude-opus-4-8",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    *GEMINI_THINKING_LEVEL_MODELS,
     "us.anthropic.claude-opus-4-8",
 }
 
@@ -38,7 +43,7 @@ def sample_batch_kwargs(
     unique_filter: bool = False,
 ):
     """Sample a dictionary of kwargs for a given model."""
-    all_kwargs = []
+    all_kwargs: list[dict[str, Any]] = []
     attempts = 0
     max_attempts = num_samples * 10  # Prevent infinite loops
 
@@ -87,7 +92,7 @@ def sample_model_kwargs(
     if isinstance(reasoning_efforts, str):
         reasoning_efforts = [reasoning_efforts]
 
-    kwargs_dict = {}
+    kwargs_dict: dict[str, Any] = {}
 
     # 1. SAMPLE: model name
     if model_sample_probs is not None:
@@ -161,8 +166,12 @@ def sample_model_kwargs(
     # 4.b) SET: max_tokens for Google reasoning effort
     elif provider == "google" and is_reasoning_model(model_name):
         kwargs_dict["max_tokens"] = random.choice(max_tokens)
-        think_bool = r_effort != "disabled"
-        if think_bool:
+        if api_model_name in GEMINI_THINKING_LEVEL_MODELS:
+            if r_effort != "disabled":
+                kwargs_dict["thinking_level"] = GEMINI_THINKING_LEVEL_BY_EFFORT[
+                    r_effort
+                ]
+        elif r_effort != "disabled":
             t = THINKING_TOKENS[r_effort]
             thinking_tokens = t if t < kwargs_dict["max_tokens"] else 1024
             kwargs_dict["thinking_budget"] = thinking_tokens

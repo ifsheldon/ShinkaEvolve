@@ -1,0 +1,2 @@
+# Patch fixtures contain literal seven-character SEARCH/REPLACE separators.
+tests/test_edit_base.py conflict-marker-size=32

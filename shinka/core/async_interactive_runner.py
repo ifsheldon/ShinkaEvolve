@@ -90,12 +90,12 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
         return None
 
     # --------------------------------------------------------------------- #
-    # Main run() override                                                    #
+    # Run body inside the inherited provider-client cache scope              #
     # --------------------------------------------------------------------- #
 
     _MAX_REENTRIES = 100  # safety guard against infinite re-entry
 
-    async def run_async(self):
+    async def _run_async(self) -> None:
         """Main async evolution loop with interactive steering."""
         self.start_time = time.time()
         self.last_progress_time = self.start_time
@@ -595,7 +595,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
 
             logger.info(
                 "Interactive %s gen %d: [1/8] setting up directories",
-                action_type, generation,
+                action_type,
+                generation,
             )
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
@@ -618,7 +619,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # --- Meta recommendations (best-effort) ----------------------
             logger.info(
                 "Interactive %s gen %d: [2/8] fetching meta recommendations",
-                action_type, generation,
+                action_type,
+                generation,
             )
             meta_recs = None
             if self.meta_summarizer:
@@ -630,7 +632,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # --- LLM model selection (transparent pass-through) -----------
             logger.info(
                 "Interactive %s gen %d: [3/8] selecting LLM model",
-                action_type, generation,
+                action_type,
+                generation,
             )
             model_sample_probs, model_posterior = None, None
             if self.llm_selection is not None:
@@ -639,7 +642,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # --- Run patch with interactive overrides ---------------------
             logger.info(
                 "Interactive %s gen %d: [4/8] generating patch (LLM call)...",
-                action_type, generation,
+                action_type,
+                generation,
             )
             t_patch_start = time.time()
             patch_result = await self._run_patch_async(
@@ -658,20 +662,27 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             if not patch_result:
                 logger.warning(
                     "Interactive %s gen %d: patch generation failed after %.1fs",
-                    action_type, generation, t_patch_elapsed,
+                    action_type,
+                    generation,
+                    t_patch_elapsed,
                 )
                 return None
 
             code_diff, meta_patch_data, success = patch_result
             logger.info(
                 "Interactive %s gen %d: [5/8] patch generated in %.1fs (success=%s)",
-                action_type, generation, t_patch_elapsed, success,
+                action_type,
+                generation,
+                t_patch_elapsed,
+                success,
             )
             if not success:
                 error_detail = meta_patch_data.get("error_attempt", "unknown")
                 logger.warning(
                     "Interactive %s: patch not successful for gen %d: %s",
-                    action_type, generation, error_detail,
+                    action_type,
+                    generation,
+                    error_detail,
                 )
                 return None
 
@@ -683,7 +694,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # --- Get code embedding ---------------------------------------
             logger.info(
                 "Interactive %s gen %d: [6/8] computing code embedding",
-                action_type, generation,
+                action_type,
+                generation,
             )
             code_embedding, embed_cost = await self._get_code_embedding_async(
                 exec_fname
@@ -692,7 +704,8 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # --- Submit for evaluation (skip novelty check) ---------------
             logger.info(
                 "Interactive %s gen %d: [7/8] submitting for evaluation",
-                action_type, generation,
+                action_type,
+                generation,
             )
             job_id = await self.scheduler.submit_async_nonblocking(
                 exec_fname, results_dir
@@ -727,10 +740,11 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # --- Wait for evaluation slot if at capacity ------------------
             if len(self.running_jobs) >= self.max_evaluation_jobs:
                 logger.info(
-                    "Interactive %s gen %d: waiting for eval slot "
-                    "(%d/%d jobs running)",
-                    action_type, generation,
-                    len(self.running_jobs), self.max_evaluation_jobs,
+                    "Interactive %s gen %d: waiting for eval slot (%d/%d jobs running)",
+                    action_type,
+                    generation,
+                    len(self.running_jobs),
+                    self.max_evaluation_jobs,
                 )
             while len(self.running_jobs) >= self.max_evaluation_jobs:
                 if self.should_stop.is_set():
@@ -750,7 +764,9 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
             # Notify frontend that a program is queued for evaluation
             logger.info(
                 "Interactive %s gen %d: [8/8] notifying frontend (job_id=%s)",
-                action_type, generation, job_id,
+                action_type,
+                generation,
+                job_id,
             )
             code_content = await self._read_file_async(exec_fname) or ""
             await self.event_notifier.notify_queued(
@@ -776,7 +792,9 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
 
         except Exception as e:
             logger.error(
-                "Error in interactive proposal gen %d: %s", generation, e,
+                "Error in interactive proposal gen %d: %s",
+                generation,
+                e,
                 exc_info=True,
             )
             return None
