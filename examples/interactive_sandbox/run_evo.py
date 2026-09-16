@@ -13,8 +13,8 @@ Usage
 -----
     # One-command launch (starts backend + frontend + runner together):
     cd evolve-shell
-    uv run python start.py ../ShinkaEvolve/examples/interactive_sandbox \
-        --run ../ShinkaEvolve/examples/interactive_sandbox/run_evo.py \
+    uv run python start.py --shinka-search-root ../ShinkaEvolve/examples/interactive_sandbox \
+        --example-runner ../ShinkaEvolve/examples/interactive_sandbox/run_evo.py \
         --auto-port --open
 
     # Or run standalone (no UI):
@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
-import shutil
+import asyncio
 import textwrap
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -459,7 +459,7 @@ def _create_evo_config() -> EvolutionConfig:
         #     Path(__file__).resolve().parent / "review_prioritization.py"
         # ),
         # Push-based UI updates.  Auto-detected from EVOLVE_SHELL_URL env
-        # var when launched via start.py --run, or set explicitly here.
+        # var when launched via start.py --example-runner, or set explicitly here.
         callback_url=os.environ.get("EVOLVE_SHELL_URL", "http://localhost:8000"),
     )
 
@@ -467,43 +467,37 @@ def _create_evo_config() -> EvolutionConfig:
 # ── Main ────────────────────────────────────────────────────────────────────
 
 
-def _clean_previous_run() -> None:
-    """Remove stale artefacts from a previous run so we always start fresh."""
-    here = Path(__file__).resolve().parent
-    db_file = here / "evolution_db.sqlite"
-    results = here / "results_sandbox"
+def main(
+    resume: bool = False,
+    results_dir: Path = Path("results_sandbox"),
+    init_only: bool = False,
+) -> None:
+    """Run mock evolution, or initialize a new seed-only dataset without a runner."""
+    from runtime import initialize_only, prepare_mock_pricing
 
-    removed = []
-    for p in (db_file, results):
-        if p.exists():
-            if p.is_dir():
-                shutil.rmtree(p)
-            else:
-                p.unlink()
-            removed.append(str(p.name))
+    results_dir = results_dir.resolve()
+    database = results_dir / "programs.sqlite"
+    if not resume and results_dir.exists():
+        raise FileExistsError(
+            f"Destination exists: {results_dir}. Use --resume for an existing run."
+        )
+    if resume and not database.is_file():
+        raise FileNotFoundError(f"No database to resume: {database}")
+    manifest = results_dir / "dataset.json"
+    if manifest.is_file():
+        import json
 
-    if removed:
-        print(f"[clean] Removed stale artefacts: {', '.join(removed)}")
-
-
-def main(resume: bool = False):
-    """Run interactive evolution using ShinkaEvolveInteractiveRunner."""
-    if not resume:
-        _clean_previous_run()
-
-    print("=" * 72)
-    print("  Interactive Sandbox — Mock Evolution (ASYNC)")
-    print("  DB:  evolution_db.sqlite")
-    if resume:
-        print("  Mode: RESUME (will start paused for review)")
-    else:
-        print("  Mode: FRESH RUN")
-    print("=" * 72)
-    print()
-    print("Tip: start the evolve-shell UI in another terminal to interact.")
-    print("     You can pause/resume/suggest/merge from the web interface.\n")
-
+        if json.loads(manifest.read_text()).get("role") == "mock-guide":
+            raise ValueError(
+                "mock-guide is fixed; use a mock-demo working copy to evolve"
+            )
+    prepare_mock_pricing(results_dir)
     evo_config = _create_evo_config()
+    evo_config.results_dir = str(results_dir)
+    evo_config.init_program_path = str(Path(__file__).parent / "initial.py")
+    if init_only:
+        evo_config.callback_url = None
+    job_config.eval_program_path = str(Path(__file__).parent / "evaluate.py")
     runner = ShinkaEvolveInteractiveRunner(
         evo_config=evo_config,
         job_config=job_config,
@@ -512,7 +506,10 @@ def main(resume: bool = False):
         max_proposal_jobs=4,
         verbose=True,
     )
-    runner.run()
+    if init_only:
+        asyncio.run(initialize_only(runner))
+    else:
+        runner.run()
 
 
 if __name__ == "__main__":
@@ -529,6 +526,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Accepted for compatibility with start.py (always interactive).",
     )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=Path("results_sandbox"),
+        help="Working run directory; fresh runs require a new destination",
+    )
+    parser.add_argument(
+        "--init-only",
+        action="store_true",
+        help="Create starting nodes without running evolution",
+    )
     args = parser.parse_args()
 
-    main(resume=args.resume)
+    if args.resume and args.init_only:
+        parser.error("--resume and --init-only are mutually exclusive")
+    main(resume=args.resume, results_dir=args.results_dir, init_only=args.init_only)

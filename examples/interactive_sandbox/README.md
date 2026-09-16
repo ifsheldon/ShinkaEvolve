@@ -1,41 +1,64 @@
-# Interactive Sandbox
+# Interactive sandbox
 
-Minimal example for testing the interactive evolution features without
-real LLM API keys. The mock LLM prints every prompt it receives and returns
-trivially modified programs; the evaluator assigns random scores in [0, 10].
+Test interactive evolution with local mock LLM, embedding, and pricing providers.
+The evaluator assigns random scores in [0, 10]; these runs illustrate the interface and do not represent benchmark results.
+No embedding or generation API calls are required.
 
-## Quick start
+## Start an interactive demo
+
+With the EvolVis release datasets installed, run this from the EvolVis repository root:
 
 ```bash
-# 1. Run the mock evolution  (from ShinkaEvolve root)
-cd examples/interactive_sandbox
-uv run python run_evo.py
-
-# 2. In a second terminal, start the evolve-shell backend
-cd evolve-shell/backend
-SHINKA_SEARCH_ROOT=../../ShinkaEvolve/examples/interactive_sandbox uv run python -m uvicorn main:app --reload --port 8000
-
-# 3. In a third terminal, start the evolve-shell frontend
-cd evolve-shell
-npm run dev
+uv run poe start-mock-interactive
 ```
 
-Open <http://localhost:3000> and select the `interactive_sandbox` database.
+The launcher creates a fresh working copy of `mock-demo`, connects its runner, and starts the frontend and backend.
+The five initial nodes remain unchanged until you click **Start**.
+The release snapshots stay fixed.
+Opening **Guide** temporarily switches to the populated, read-only `mock-guide` example and returns to the original dataset when you exit.
+
+## Create or resume a standalone run
+
+From the ShinkaEvolve root:
+
+```bash
+# Initialize five island seeds without starting evolution.
+uv run python examples/interactive_sandbox/run_evo.py --init-only --results-dir /tmp/my-mock-demo
+
+# Attach an interactive runner to those existing seeds.
+uv run python examples/interactive_sandbox/run_evo.py --resume --results-dir /tmp/my-mock-demo
+```
+
+Omit `--init-only` to initialize a fresh interactive run and wait for a start command.
+A fresh run requires a destination that does not exist; the script never deletes an existing run.
+Use `--resume` to retain existing nodes, including runs containing only generation-zero seeds.
+`--resume` and `--init-only` are mutually exclusive.
+The runner rejects directories marked `mock-guide` in `dataset.json`.
+
+To connect an existing run to the EvolVis UI, run this from `evolve-shell`:
+
+```bash
+uv run python start.py --shinka-search-root /tmp/my-mock-demo \
+  --example-runner ../ShinkaEvolve/examples/interactive_sandbox/run_evo.py \
+  --runner-args '--resume --results-dir /tmp/my-mock-demo' \
+  --frontend-port 3000 --backend-port 8001
+```
 
 ## What to try
 
-| Feature            | How                                            |
-|--------------------|------------------------------------------------|
-| Pause / Resume     | Click the pause/play buttons in the control bar |
-| Stop               | Click stop (the runner will drain active jobs)  |
-| Expert Suggestion  | Right-click a node → Suggest → type guidance    |
-| Multi-parent Merge | Ctrl-click 2–3 nodes → fill the merge panel     |
-| Real-time updates  | Watch the tree grow via WebSocket push           |
+| Feature | Action |
+|---|---|
+| Start / Continue / Pause | Start mock generations, pause, and continue the runner. |
+| Expert suggestion | Right-click a node, choose Suggest, and enter guidance. |
+| Multi-parent merge | Select two or more nodes and open Merge. |
+| Live updates | Watch new nodes appear through WebSocket updates. |
+| Summary | Wait for the configured summarization interval; a seed-only run has no summary. |
 
 ## Files
 
-| File           | Description                                |
-|----------------|--------------------------------------------|
-| `initial.py`   | Seed program (trivial math function)       |
-| `evaluate.py`  | Evaluator that returns random scores       |
-| `run_evo.py`   | Runner with mock LLM (prints all prompts)  |
+| File | Purpose |
+|---|---|
+| `initial.py` | Seed program. |
+| `evaluate.py` | Local evaluator. |
+| `run_evo.py` | Mock providers, configuration, and command-line entry point. |
+| `runtime.py` | Offline pricing snapshot and seed-only initialization. |
