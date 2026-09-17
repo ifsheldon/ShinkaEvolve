@@ -1,10 +1,9 @@
 """Async evolution runner with interactive expert-in-the-loop steering.
 
-Subclasses :class:`AsyncEvolutionRunner` to add a 4th concurrent asyncio
+Subclasses :class:`ShinkaEvolveRunner` to add a 4th concurrent asyncio
 task that polls the SQLite ``interactive_commands`` table via
-:class:`WebController`.  Supports the same command vocabulary as the sync
-interactive runner (PAUSE / RESUME / STOP / CONTINUE / SUGGEST / MERGE)
-while retaining the full async concurrency pipeline for 5-10x speedup.
+:class:`WebController`. Supports PAUSE, RESUME, STOP, START, STEP,
+SET_TARGET, SUGGEST, and MERGE while retaining the async concurrency pipeline.
 """
 
 from __future__ import annotations
@@ -32,12 +31,12 @@ _STATUS_WRITE_RETRIABLE_EXCEPTIONS = (sqlite3.Error, OSError)
 class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
     """Async evolution runner with interactive steering support.
 
-    Adds three capabilities on top of :class:`AsyncEvolutionRunner`:
+    Adds three capabilities on top of :class:`ShinkaEvolveRunner`:
 
     1. A 4th concurrent task (``_interactive_command_task``) that polls the
        SQLite command queue and dispatches interactive actions.
-    2. Interaction-mode gating in ``_proposal_coordinator_task`` (auto /
-       manual / wait) that controls when automatic proposals are generated.
+    2. A pause gate in ``_proposal_coordinator_task`` that controls automatic
+       proposals, plus a step mode that submits one proposal before pausing.
     3. A keep-alive loop that keeps the runner alive after scheduled
        generations complete so experts can continue submitting suggestions
        and merges.

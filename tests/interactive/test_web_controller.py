@@ -1,6 +1,5 @@
 """Tests for WebController interactive command processing and status management."""
 
-
 import pytest
 
 from shinka.interactive.interactive_db import (
@@ -48,19 +47,6 @@ class TestFlagCommands:
         controller.interactive_db.push_command(CommandType.STOP)
         controller.process_commands()
         assert controller.stop_requested
-
-    def test_continue_sets_flag(self, controller):
-        assert not controller.continue_requested
-        controller.interactive_db.push_command(CommandType.CONTINUE)
-        controller.process_commands()
-        assert controller.continue_requested
-
-    def test_clear_continue(self, controller):
-        controller.interactive_db.push_command(CommandType.CONTINUE)
-        controller.process_commands()
-        assert controller.continue_requested
-        controller.clear_continue()
-        assert not controller.continue_requested
 
     def test_start_sets_flag(self, controller):
         assert not controller.start_requested
@@ -301,16 +287,3 @@ class TestStatePriority:
         )
         status = controller.interactive_db.read_status()
         assert status.run_state == RunState.WAITING_FOR_START.value
-
-    def test_waiting_overrides_paused(self, controller):
-        """The 'waiting' flag (manual continue mode) overrides paused."""
-        controller.pause()
-        controller.write_status(
-            generation=0,
-            best_score=0,
-            queued_jobs=0,
-            total_programs=0,
-            waiting=True,
-        )
-        status = controller.interactive_db.read_status()
-        assert status.run_state == RunState.WAITING.value

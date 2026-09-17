@@ -1,7 +1,7 @@
-"""Web-based interactive controller for EvolutionRunner.
+"""Web-based interactive controller for ShinkaEvolveInteractiveRunner.
 
-Replaces the CLI InteractiveController with a non-blocking controller that
-reads commands from the ``interactive_commands`` SQLite table and writes status
+Reads commands from the ``interactive_commands`` SQLite table without blocking
+proposal generation and writes status
 back to ``interactive_status``.
 """
 
@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 class WebController:
     """Non-blocking interactive controller driven by the ``interactive_commands`` table.
 
-    The runner calls :meth:`process_commands` once per iteration (in the
-    main ``while`` loop).  The method drains all pending commands and
+    The runner calls :meth:`process_commands` from its concurrent command task.
+    The method drains all pending commands and
     returns structured actions for the runner to execute.
     """
 
@@ -42,12 +42,11 @@ class WebController:
         self.interactive_db = InteractiveDatabase(db_path)
         self._paused = False
         self._stop_requested = False
-        self._continue_requested = False
         self._step_requested = False
         self._start_requested = False
 
     # ------------------------------------------------------------------
-    # Public API used by EvolutionRunner
+    # Public API used by ShinkaEvolveInteractiveRunner
     # ------------------------------------------------------------------
 
     @property
@@ -57,10 +56,6 @@ class WebController:
     @property
     def stop_requested(self) -> bool:
         return self._stop_requested
-
-    @property
-    def continue_requested(self) -> bool:
-        return self._continue_requested
 
     @property
     def step_requested(self) -> bool:
@@ -73,10 +68,6 @@ class WebController:
     @property
     def start_requested(self) -> bool:
         return self._start_requested
-
-    def clear_continue(self) -> None:
-        """Reset the continue flag after a job has been submitted."""
-        self._continue_requested = False
 
     def pause(self) -> None:
         """Pause the runner (block new job submissions)."""
@@ -91,12 +82,14 @@ class WebController:
 
         Returns a list of action dicts. Currently supported actions:
 
+        * ``{"action": "set_target", "target_generations": int,
+              "command_id": int}``
         * ``{"action": "suggest", "parent_id": str, "prompt": str,
               "patch_type": str, "command_id": int}``
         * ``{"action": "merge", "parent_ids": [str, ...], "prompt": str,
               "patch_type": str, "command_id": int}``
 
-        Pause / resume / stop are handled internally (they flip flags).
+        Pause / resume / stop / start / step are handled internally (they flip flags).
 
         .. note::
 
@@ -142,7 +135,6 @@ class WebController:
         target_generations: int = 0,
         *,
         idle: bool = False,
-        waiting: bool = False,
         waiting_for_start: bool = False,
         is_resuming: bool = False,
     ) -> None:
@@ -159,8 +151,6 @@ class WebController:
             state = RunState.WAITING_FOR_START
         elif self._stop_requested:
             state = RunState.STOPPED
-        elif waiting:
-            state = RunState.WAITING
         elif self._paused:
             state = RunState.PAUSED
         elif idle:
@@ -218,11 +208,6 @@ class WebController:
         if ct == CommandType.STOP:
             logger.info("Interactive: stop requested")
             self._stop_requested = True
-            return None
-
-        if ct == CommandType.CONTINUE:
-            logger.info("Interactive: continue requested")
-            self._continue_requested = True
             return None
 
         if ct == CommandType.START:

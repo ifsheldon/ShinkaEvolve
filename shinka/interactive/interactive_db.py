@@ -1,10 +1,11 @@
 """Interactive (Human-in-the-Loop) database layer.
 
-Uses two SQLite tables in the same evolution database for IPC between
-the EvolutionRunner process and the evolve-shell FastAPI backend:
+Uses SQLite tables in the same evolution database for IPC between
+the ShinkaEvolveInteractiveRunner process and the evolve-shell FastAPI backend:
 
 - ``interactive_commands``  — Web UI → Runner  (pause, resume, stop, suggest, merge)
 - ``interactive_status``    — Runner → Web UI  (run state, generation, best score)
+- ``banned_programs``       — Programs excluded from future selection
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ class CommandType(str, Enum):
     STOP = "stop"
     SUGGEST = "suggest"
     MERGE = "merge"
-    CONTINUE = "continue"
     SET_TARGET = "set_target"
     STEP = "step"
     START = "start"
@@ -57,7 +57,6 @@ class RunState(str, Enum):
     IDLE = "idle"  # generations done, still accepting interactive commands
     COMPLETED = "completed"
     STOPPED = "stopped"
-    WAITING = "waiting"  # manual mode: waiting for human to click Continue
     WAITING_FOR_START = "waiting_for_start"  # runner ready, awaiting user greenlight
     ERROR = "error"
 
