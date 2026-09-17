@@ -41,6 +41,11 @@ from shinka.core import EvolutionConfig, ShinkaEvolveInteractiveRunner
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 from shinka.llm.providers.result import QueryResult
+from shinka.prompts import (
+    META_STEP1_SYSTEM_MSG,
+    META_STEP2_SYSTEM_MSG,
+    META_STEP3_SYSTEM_MSG,
+)
 
 # ── Mock LLM ────────────────────────────────────────────────────────────────
 
@@ -49,25 +54,19 @@ _CALL_COUNTER = 0
 _META_COUNTER = 0
 
 
-def _is_meta_call(system_msg: str) -> bool:
-    """Detect whether this LLM call is a meta-summarization step."""
-    meta_markers = [
-        "analyzing an individual program",  # Step 1
-        "global insights",  # Step 2
-        "actionable recommendations",  # Step 3
-    ]
-    lower = system_msg.lower()
-    return any(m in lower for m in meta_markers)
+def _mock_meta_response(system_msg: str) -> str | None:
+    """Return the matching mock summary, or None for a program-generation call."""
+    if system_msg not in (
+        META_STEP1_SYSTEM_MSG,
+        META_STEP2_SYSTEM_MSG,
+        META_STEP3_SYSTEM_MSG,
+    ):
+        return None
 
-
-def _mock_meta_response(system_msg: str, msg: str) -> str:
-    """Return a plausible mock response for meta-summarization calls."""
     global _META_COUNTER
     _META_COUNTER += 1
 
-    lower_sys = system_msg.lower()
-
-    if "analyzing an individual program" in lower_sys:
+    if system_msg == META_STEP1_SYSTEM_MSG:
         # Step 1: Individual program summary
         return (
             f"**Summary:** This program variant #{_META_COUNTER} modifies loop "
@@ -77,33 +76,27 @@ def _mock_meta_response(system_msg: str, msg: str) -> str:
             f"**Weaknesses:** Limited diversity in strategies."
         )
 
-    if "global insights" in lower_sys:
+    if system_msg == META_STEP2_SYSTEM_MSG:
         # Step 2: Global insights scratchpad
         return (
-            "## Key Observations\n\n"
-            "1. Most successful programs use higher loop counts combined "
-            "with moderate multipliers.\n"
-            "2. Programs that time out tend to include unnecessary sleeps.\n"
-            "3. The search space is narrow — all variants follow the same "
-            "sum-of-gaussians template.\n\n"
-            "## Promising Directions\n\n"
-            "- Explore alternative distributions (uniform, exponential).\n"
-            "- Increase the seed diversity to avoid local optima.\n"
-            "- Consider caching intermediate results for efficiency."
+            "**Illustrative mock summary.** Scores are random and do not "
+            "measure code quality.\n\n"
+            "## What changes\n\n"
+            "- Variants change loop counts and multipliers in a small Python program.\n"
+            "- Some variants intentionally sleep long enough to trigger a timeout.\n\n"
+            "## What to explore\n\n"
+            "- Follow parent-child links to inspect how a program changed.\n"
+            "- Compare patches and scores, and trace the path to the highest-scoring node."
         )
 
-    if "actionable recommendations" in lower_sys:
-        # Step 3: Recommendations
-        return (
-            "1. Increase the loop count beyond 50 to explore larger sums.\n"
-            "2. Try replacing gauss(0,1) with a heavier-tailed distribution.\n"
-            "3. Use multiple seeds and return the maximum across runs.\n"
-            "4. Avoid adding sleep() calls that risk timeout.\n"
-            "5. Consider a two-stage approach: coarse search then refinement."
-        )
-
-    # Fallback — shouldn't happen
-    return f"Mock meta response #{_META_COUNTER} for an unrecognised meta step."
+    # Step 3: Recommendations
+    return (
+        "1. Increase the loop count beyond 50 to explore larger sums.\n"
+        "2. Try replacing gauss(0,1) with a heavier-tailed distribution.\n"
+        "3. Use multiple seeds and return the maximum across runs.\n"
+        "4. Avoid adding sleep() calls that risk timeout.\n"
+        "5. Consider a two-stage approach: coarse search then refinement."
+    )
 
 
 def _mock_query(
@@ -137,8 +130,8 @@ def _mock_query(
     print(sep)
 
     # Meta-summarization calls get their own response format
-    if _is_meta_call(system_msg):
-        content = _mock_meta_response(system_msg, msg)
+    content = _mock_meta_response(system_msg)
+    if content is not None:
         print(f"[MOCK META RESPONSE]  ({len(content)} chars)")
         print()
         return QueryResult(

@@ -3,6 +3,8 @@
 Test interactive evolution with local mock LLM, embedding, and pricing providers.
 The evaluator assigns random scores in [0, 10]; these runs illustrate the interface and do not represent benchmark results.
 No embedding or generation API calls are required.
+Mock summary responses are routed using the same canonical system prompts as the three-step summarizer, for both synchronous and asynchronous calls.
+The global overview is explicitly labeled as illustrative and explains that random scores do not measure code quality.
 
 ## Start an interactive demo
 
