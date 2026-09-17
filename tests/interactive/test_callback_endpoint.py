@@ -1,4 +1,4 @@
-"""Integration tests for the evolve-shell /api/callback endpoint.
+"""Integration tests for the evomaestro-interface /api/callback endpoint.
 
 These tests verify that the backend correctly receives runner lifecycle
 events and broadcasts them to connected WebSocket clients.
@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-# The backend lives in evolve-shell/backend/main.py.  Add its parent to
+# The backend lives in evomaestro-interface/backend/main.py.  Add its parent to
 # sys.path so that ``import main`` resolves.
 _BACKEND_DIR = (
     Path(__file__).resolve().parents[2]  # ShinkaEvolve/
     / ".."
-    / "evolve-shell"
+    / "evomaestro-interface"
     / "backend"
 )
 if str(_BACKEND_DIR) not in sys.path:
@@ -32,7 +32,7 @@ def _set_search_root(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    """Provide a FastAPI TestClient for the evolve-shell backend."""
+    """Provide a FastAPI TestClient for the evomaestro-interface backend."""
     # Re-import with a fresh SEARCH_ROOT each time.
     import importlib
 

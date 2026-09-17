@@ -37,7 +37,7 @@ Use `--resume` to retain existing nodes, including runs containing only generati
 `--resume` and `--init-only` are mutually exclusive.
 The runner rejects directories marked `mock-guide` in `dataset.json`.
 
-To connect an existing run to the EvolVis UI, run this from `evolve-shell`:
+To connect an existing run to the EvolVis UI, run this from `evomaestro-interface`:
 
 ```bash
 uv run python start.py --shinka-search-root /tmp/my-mock-demo \

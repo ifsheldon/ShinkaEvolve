@@ -78,7 +78,9 @@ class EvolutionConfig:
     max_db_workers: int = 4
     eval_timeout: Optional[int] = None  # Per-evaluation timeout in seconds
     review_prioritization_function_path: Optional[str] = None
-    callback_url: Optional[str] = None  # WebSocket push-update URL (evolve-shell)
+    callback_url: Optional[str] = (
+        None  # WebSocket push-update URL (evomaestro-interface)
+    )
 
     # Meta-prompt evolution settings.
     evolve_prompts: bool = False

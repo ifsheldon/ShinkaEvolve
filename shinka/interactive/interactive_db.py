@@ -1,7 +1,7 @@
 """Interactive (Human-in-the-Loop) database layer.
 
 Uses SQLite tables in the same evolution database for IPC between
-the ShinkaEvolveInteractiveRunner process and the evolve-shell FastAPI backend:
+the ShinkaEvolveInteractiveRunner process and the evomaestro-interface FastAPI backend:
 
 - ``interactive_commands``  — Web UI → Runner  (pause, resume, stop, suggest, merge)
 - ``interactive_status``    — Runner → Web UI  (run state, generation, best score)

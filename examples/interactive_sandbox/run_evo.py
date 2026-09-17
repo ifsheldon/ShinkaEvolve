@@ -12,7 +12,7 @@ score in [0, 10].
 Usage
 -----
     # One-command launch (starts backend + frontend + runner together):
-    cd evolve-shell
+    cd evomaestro-interface
     uv run python start.py --shinka-search-root ../ShinkaEvolve/examples/interactive_sandbox \
         --example-runner ../ShinkaEvolve/examples/interactive_sandbox/run_evo.py \
         --auto-port --open

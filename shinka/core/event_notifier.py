@@ -1,7 +1,7 @@
 """Fire-and-forget HTTP callbacks for program lifecycle events.
 
 When ``callback_url`` is configured, the runner POSTs lightweight JSON
-payloads to the evolve-shell backend so it can push real-time updates
+payloads to the evomaestro-interface backend so it can push real-time updates
 to connected frontends via WebSocket — replacing the SQLite polling loop.
 """
 
