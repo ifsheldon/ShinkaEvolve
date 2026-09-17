@@ -3,7 +3,7 @@
 Shinka combines Large Language Models with evolutionary algorithms to drive
 scientific discovery. This guide covers installation, first run, and API usage.
 
-![](../docs/conceptual.png)
+![ShinkaEvolve search and evaluation loop](media/conceptual.png)
 
 ## Table of Contents
 
