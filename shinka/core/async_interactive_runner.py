@@ -141,14 +141,15 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                     self.finalization_complete.clear()
                     self._interactive_stop_requested = False
 
-                    # Pause and wait for user to click Continue before
-                    # starting the new generation cycle
-                    self.web_controller.pause()
-                    self.interactive_paused.clear()
-                    logger.info(
-                        "Target increased — paused. Click Continue in the "
-                        "UI to start generating."
-                    )
+                    # An explicit Step already authorizes one proposal. A
+                    # plain target increase still waits for Continue.
+                    if not self._step_mode:
+                        self.web_controller.pause()
+                        self.interactive_paused.clear()
+                        logger.info(
+                            "Target increased — paused. Click Continue in the "
+                            "UI to start generating."
+                        )
 
                 # --- Spawn concurrent tasks -------------------------------
                 tasks = [
@@ -398,12 +399,7 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
 
                 # Step mode: unpause + allow one submission
                 if self.web_controller.step_requested:
-                    self._step_mode = True
-                    self.web_controller.resume()
-                    self.interactive_paused.set()
-                    logger.info(
-                        "Interactive: step mode — will generate 1 node then pause"
-                    )
+                    self._request_step()
 
                 if self.web_controller.is_paused:
                     self.interactive_paused.clear()
@@ -419,6 +415,20 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                 logger.error(f"Error in interactive command task: {e}")
 
             await asyncio.sleep(1.0)
+
+    def _request_step(self) -> None:
+        """Reserve one additional proposal slot and unpause for a single step."""
+        # Assignment can be ahead of completion while jobs are in flight.
+        # Extend from the next unassigned generation so Step always has one
+        # slot without reusing or truncating already assigned generations.
+        self.evo_config.num_generations = max(
+            self.evo_config.num_generations, self.next_generation_to_submit + 1
+        )
+        self._step_mode = True
+        self.web_controller.resume()
+        self.interactive_paused.set()
+        self.slot_available.set()
+        logger.info("Interactive: step mode — will generate 1 node then pause")
 
     async def _write_interactive_status(self, loop: asyncio.AbstractEventLoop):
         """Push current run status to the interactive_status table."""
@@ -841,7 +851,10 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
                     continue
 
                 # --- Base class coordinator logic -------------------------
-                if self._is_system_stuck():
+                # Recovery can submit proposals itself, bypassing Step's
+                # single-submission and auto-pause bookkeeping below.
+                # A pending Step must use only the normal coordinator path.
+                if not self._step_mode and self._is_system_stuck():
                     recovery_success = await self._handle_stuck_system()
                     if not recovery_success:
                         break
