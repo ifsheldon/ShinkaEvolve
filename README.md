@@ -307,10 +307,18 @@ Use `--dry-run` to inspect the planned changes. The modifying command creates a 
 For a migrated database created before prioritization metrics were cached, populate `review_priority_metrics` so historical programs can be recomputed when settings change:
 
 ```bash
-uv run python -m shinka.tools.compat.backfill_review_priorities path/to/programs.sqlite
+uv run python -m shinka.tools.compat.backfill_review_priorities path/to/programs.sqlite --metrics-only --dry-run
+uv run python -m shinka.tools.compat.backfill_review_priorities path/to/programs.sqlite --metrics-only
 ```
 
-This command preserves existing non-`none` assignments, computes cached signals for every program, and backs up the database before writing.
+`--metrics-only` rebuilds score change, code dissimilarity, and reasoning dissimilarity for every program using existing data, without embedding or model requests.
+It preserves every program field, including historical `none` and custom priority assignments and their display data.
+Missing or unusable reasoning embeddings remain unfilled, and programs sharing both generation and timestamp are never compared as predecessors.
+Changing Expert Review Prioritization settings afterward can use the rebuilt cache to recalculate priorities.
+The dry run opens the existing database read-only and creates no backup; the modifying command creates a numbered SQLite backup and writes the cache in one transaction.
+
+Without `--metrics-only`, the command also applies the default score-improvement policy to programs whose current priority is `none`, preserving existing non-`none` assignments.
+`--force` reclassifies all programs and cannot be combined with `--metrics-only`.
 
 <details>
 <summary><strong>DatabaseConfig Parameters</strong> (click to expand)</summary>

@@ -9,6 +9,10 @@ Usage::
 
     python -m shinka.tools.compat.backfill_review_priorities path/to/shinka.db
     python -m shinka.tools.compat.backfill_review_priorities path/to/shinka.db --dry-run
+    python -m shinka.tools.compat.backfill_review_priorities path/to/shinka.db --metrics-only
+
+Use ``--metrics-only`` to rebuild cached signals while preserving every program
+field, including all historical review priorities and their display data.
 
 The original database is backed up to ``<name>.db.bak`` (or
 ``<name>.db.bak.1``, ``.bak.2``, … if earlier backups exist) before any
@@ -21,6 +25,8 @@ import argparse
 import json
 import sqlite3
 import sys
+from contextlib import closing
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -120,7 +126,11 @@ def _row_to_program_data(row: sqlite3.Row) -> ProgramData:
 
 
 def backfill(
-    db_path: Path, *, dry_run: bool = False, force: bool = False
+    db_path: Path,
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    metrics_only: bool = False,
 ) -> Dict[str, int]:
     """Run default expert review prioritization on all unclassified programs.
 
@@ -129,19 +139,44 @@ def backfill(
     ``review_priority_level != 'none'`` are skipped.
 
     Cached prioritization metrics are populated for every program, including
-    programs whose existing priority is preserved.
+    programs whose existing priority is preserved. With *metrics_only*, every
+    program field is preserved, including ``none`` priorities and custom data.
+    This cannot be combined with *force*.
+
+    A dry run opens an existing database read-only. Writes run in one transaction
+    so metrics and any priority changes either all succeed or all roll back.
 
     Returns a dict with counts: ``total``, ``metrics``, ``skipped``,
     ``none``, ``moderate``, ``high``.
     """
-    conn = sqlite3.connect(str(db_path), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
+    if force and metrics_only:
+        raise ValueError("--force and --metrics-only cannot be combined.")
+    resolved_path = db_path.expanduser().resolve(strict=True)
+    mode = "ro" if dry_run else "rw"
+    with (
+        closing(
+            sqlite3.connect(
+                f"{resolved_path.as_uri()}?mode={mode}", uri=True, timeout=30
+            )
+        ) as conn,
+        conn,
+    ):
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
+        return _backfill_connection(
+            conn, dry_run=dry_run, force=force, metrics_only=metrics_only
+        )
+
+
+def _backfill_connection(
+    conn: sqlite3.Connection, *, dry_run: bool, force: bool, metrics_only: bool
+) -> Dict[str, int]:
+    """Compute and apply cached metrics within the caller's transaction."""
     _assert_backfill_schema(conn)
 
     # Load all programs ordered by generation then timestamp
     rows = conn.execute(
-        "SELECT * FROM programs ORDER BY generation ASC, timestamp ASC"
+        "SELECT * FROM programs ORDER BY generation ASC, timestamp ASC, id ASC"
     ).fetchall()
 
     # Build a lookup for fast parent access
@@ -172,70 +207,82 @@ def backfill(
         ]
     )
 
-    for row in rows:
-        program_data = _row_to_program_data(row)
+    for _, peers in groupby(
+        rows, key=lambda row: (row["generation"], row["timestamp"])
+    ):
+        peer_rows = list(peers)
+        for row in peer_rows:
+            program_data = _row_to_program_data(row)
 
-        # Look up parent
-        parent_data: Optional[ProgramData] = None
-        parent_id = row["parent_id"]
-        if parent_id and parent_id in programs_by_id:
-            parent_data = _row_to_program_data(programs_by_id[parent_id])
+            # Look up parent
+            parent_data: Optional[ProgramData] = None
+            parent_id = row["parent_id"]
+            if parent_id and parent_id in programs_by_id:
+                parent_data = _row_to_program_data(programs_by_id[parent_id])
 
-        # Look up inspirations (archive + top_k)
-        inspiration_data: List[ProgramData] = []
-        archive_ids = _json_or_default(row["archive_inspiration_ids"], [])
-        top_k_ids = _json_or_default(row["top_k_inspiration_ids"], [])
-        seen: set = set()
-        for insp_id in list(archive_ids) + list(top_k_ids):
-            if insp_id not in seen and insp_id in programs_by_id:
-                seen.add(insp_id)
-                inspiration_data.append(_row_to_program_data(programs_by_id[insp_id]))
-
-        metrics = prioritizer.compute_priority_metrics(
-            program_data,
-            parent_data,
-            previous_code_embeddings,
-            previous_reasoning_embeddings,
-        )
-        metrics["dissimilarity_reasoning"] = reasoning_metrics[row["id"]]
-        metric_updates.append(
-            (
-                row["id"],
-                metrics["score_change"],
-                metrics["dissimilarity_code"],
-                metrics["dissimilarity_reasoning"],
+            metrics = prioritizer.compute_priority_metrics(
+                program_data,
+                parent_data,
+                previous_code_embeddings,
+                previous_reasoning_embeddings,
             )
-        )
-        stats["metrics"] += 1
-        if program_data.embedding:
-            previous_code_embeddings.append(program_data.embedding)
-        if program_data.reasoning_embedding:
-            previous_reasoning_embeddings.append(program_data.reasoning_embedding)
-
-        # Preserve existing assignments unless force mode was requested.
-        existing_level = row["review_priority_level"]
-        if not force and existing_level and existing_level != "none":
-            stats["skipped"] += 1
-            continue
-
-        level, display_data = default_prioritize_for_review(
-            program_data, parent_data, inspiration_data
-        )
-
-        if level != ReviewPriorityLevel.NONE:
-            updates.append(
+            metrics["dissimilarity_reasoning"] = reasoning_metrics[row["id"]]
+            metric_updates.append(
                 (
-                    level.value,
-                    json.dumps(display_data) if display_data else None,
                     row["id"],
+                    metrics["score_change"],
+                    metrics["dissimilarity_code"],
+                    metrics["dissimilarity_reasoning"],
                 )
             )
-            stats[level.value] += 1
-        else:
-            # In force mode, explicitly reset earlier priorities to "none".
-            if force:
-                updates.append(("none", None, row["id"]))
-            stats["none"] += 1
+            stats["metrics"] += 1
+            # Preserve existing assignments unless force mode was requested.
+            existing_level = row["review_priority_level"]
+            if metrics_only or (
+                not force and existing_level and existing_level != "none"
+            ):
+                stats["skipped"] += 1
+                continue
+
+            # Inspirations are only needed when assigning new priorities.
+            inspiration_data: List[ProgramData] = []
+            archive_ids = _json_or_default(row["archive_inspiration_ids"], [])
+            top_k_ids = _json_or_default(row["top_k_inspiration_ids"], [])
+            seen: set = set()
+            for insp_id in list(archive_ids) + list(top_k_ids):
+                if insp_id not in seen and insp_id in programs_by_id:
+                    seen.add(insp_id)
+                    inspiration_data.append(
+                        _row_to_program_data(programs_by_id[insp_id])
+                    )
+
+            level, display_data = default_prioritize_for_review(
+                program_data, parent_data, inspiration_data
+            )
+
+            if level != ReviewPriorityLevel.NONE:
+                updates.append(
+                    (
+                        level.value,
+                        json.dumps(display_data) if display_data else None,
+                        row["id"],
+                    )
+                )
+                stats[level.value] += 1
+            else:
+                # In force mode, explicitly reset earlier priorities to "none".
+                if force:
+                    updates.append(("none", None, row["id"]))
+                stats["none"] += 1
+
+        # Runtime predecessors are strictly earlier by generation/timestamp.
+        # Tied peers must not become predecessors through SQL row ordering.
+        for row in peer_rows:
+            program_data = _row_to_program_data(row)
+            if program_data.embedding:
+                previous_code_embeddings.append(program_data.embedding)
+            if program_data.reasoning_embedding:
+                previous_reasoning_embeddings.append(program_data.reasoning_embedding)
 
     if not dry_run:
         conn.executemany(
@@ -255,9 +302,7 @@ def backfill(
                 """,
                 updates,
             )
-        conn.commit()
 
-    conn.close()
     return stats
 
 
@@ -285,10 +330,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Analyse and print results without modifying the database.",
     )
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--force",
         action="store_true",
         help="Re-prioritize all programs, overwriting existing priority data.",
+    )
+    modes.add_argument(
+        "--metrics-only",
+        action="store_true",
+        help="Rebuild cached metrics without changing any program fields or priorities.",
     )
     return parser
 
@@ -312,15 +363,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Processing {db_path} ...")
     if args.force:
         print("Force mode: all programs will be re-classified.")
-    stats = backfill(db_path, dry_run=args.dry_run, force=args.force)
+    elif args.metrics_only:
+        print("Metrics-only mode: all program fields and priorities will be preserved.")
+    stats = backfill(
+        db_path, dry_run=args.dry_run, force=args.force, metrics_only=args.metrics_only
+    )
 
     print(f"\nResults ({'DRY RUN' if args.dry_run else 'APPLIED'}):")
     print(f"  Total programs : {stats['total']}")
     print(f"  Metrics cached : {stats['metrics']}")
-    print(f"  Skipped (exist): {stats['skipped']}")
-    print(f"  None           : {stats['none']}")
-    print(f"  Moderate       : {stats['moderate']}")
-    print(f"  High           : {stats['high']}")
+    if args.metrics_only:
+        print(f"  Priorities kept: {stats['skipped']}")
+    else:
+        print(f"  Skipped (exist): {stats['skipped']}")
+        print(f"  None           : {stats['none']}")
+        print(f"  Moderate       : {stats['moderate']}")
+        print(f"  High           : {stats['high']}")
 
     prioritized = stats["moderate"] + stats["high"]
     if prioritized > 0 and not args.dry_run:
