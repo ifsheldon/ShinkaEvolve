@@ -15,14 +15,21 @@ from shinka.core.async_runner import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database.async_dbase import AsyncProgramDatabase
 
 
 class _FakeAsyncDB:
-    def __init__(self, total_programs: int):
+    def __init__(self, total_programs: int, generation_ids=None):
         self.total_programs = total_programs
+        self.generation_ids = generation_ids
 
     async def get_total_program_count_async(self):
         return self.total_programs
+
+    async def get_persisted_generation_ids_async(self):
+        if self.generation_ids is not None:
+            return self.generation_ids
+        return list(range(self.total_programs))
 
 
 class _RecordingAsyncDB(_FakeAsyncDB):
@@ -195,10 +202,10 @@ def _build_runner(**overrides):
     return runner
 
 
-def test_restore_resume_progress_uses_actual_program_count():
+def test_restore_resume_progress_uses_distinct_persisted_generations():
     async def _run():
         runner = _build_runner(
-            async_db=_FakeAsyncDB(total_programs=7),
+            async_db=_FakeAsyncDB(total_programs=12, generation_ids=[0, 1, 2, 4, 6, 8]),
             db=SimpleNamespace(last_iteration=8),
             db_config=SimpleNamespace(num_islands=2),
             evo_config=SimpleNamespace(num_generations=10),
@@ -208,6 +215,56 @@ def test_restore_resume_progress_uses_actual_program_count():
 
         assert runner.completed_generations == 6
         assert runner.next_generation_to_submit == 9
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("strategy", ["initial", "best", "random"])
+def test_completion_budget_ignores_dynamic_island_copies(tmp_path, strategy):
+    """Actual island spawns do not count as new evaluations or hide budget gaps."""
+
+    async def _run():
+        config = DatabaseConfig(
+            db_path=str(tmp_path / "programs.sqlite"),
+            num_islands=2,
+            island_spawn_strategy=strategy,
+            island_spawn_subtree_size=3,
+        )
+        db = ProgramDatabase(config, embedding_model="")
+        for generation in [0, 2, 4]:
+            db.add(
+                Program(
+                    id=f"p{generation}",
+                    code="print(1)",
+                    generation=generation,
+                    parent_id=f"p{generation - 2}" if generation else None,
+                    combined_score=float(generation + 1),
+                    correct=generation != 4,
+                    island_idx=0,
+                )
+            )
+        assert db.island_manager.spawn_new_island()
+        assert db.island_manager.spawn_new_island()
+        async_db = AsyncProgramDatabase(db, max_workers=1)
+        runner = _build_runner(
+            async_db=async_db,
+            db=db,
+            db_config=config,
+            evo_config=SimpleNamespace(num_generations=6),
+            running_jobs=[SimpleNamespace(generation=3)],
+            failed_jobs_for_retry={"retry": SimpleNamespace(generation=5)},
+        )
+        try:
+            assert await async_db.get_total_program_count_async() > 4
+            await runner._restore_resume_progress()
+            assert runner.completed_generations == 3
+            assert await runner._get_missing_persisted_generations() == [1, 3, 5]
+            await runner._update_completed_generations()
+            assert runner.completed_generations == 3
+            runner.evo_config.num_generations = 2
+            assert await runner._count_completed_generations_from_db() == 2
+        finally:
+            await async_db.close_async()
 
     asyncio.run(_run())
 

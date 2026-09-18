@@ -1455,7 +1455,7 @@ class AsyncProgramDatabase:
         except EXPECTED_ASYNC_DB_EXCEPTIONS as exc:
             self._debug_track_end(op_id, success=False)
             logger.error("Error in get_persisted_generation_ids_async: %s", exc)
-            return []
+            raise
         except Exception:
             self._debug_track_end(op_id, success=False)
             raise

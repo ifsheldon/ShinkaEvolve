@@ -5437,10 +5437,8 @@ class ShinkaEvolveRunner:
 
     async def _count_completed_generations_from_db(self) -> int:
         """Count persisted completed generations, excluding island copies."""
-        total_programs = await self.async_db.get_total_program_count_async()
-        island_copies = max(0, getattr(self.db_config, "num_islands", 1) - 1)
-        completed_generations = max(0, total_programs - island_copies)
-        return min(completed_generations, self.evo_config.num_generations)
+        generations = await self.async_db.get_persisted_generation_ids_async()
+        return min(len(generations), self.evo_config.num_generations)
 
     async def _get_missing_persisted_generations(self) -> List[int]:
         """Return budgeted generations that do not yet have persisted rows."""
@@ -5593,15 +5591,14 @@ class ShinkaEvolveRunner:
 
         In async evolution, generations can complete out of order. For termination
         and progress tracking, what matters is the total count of completed work,
-        not whether it's contiguous. This counts all generations that have:
-        1. No running jobs AND
-        2. Programs in the database (successful or persisted-failed generations)
+        not whether it's contiguous. Each distinct persisted generation counts
+        once, including persisted failures. Island copies retain their source
+        generation and do not consume more of the generation budget.
         """
         # Get all generations that have running jobs
         running_generations = {job.generation for job in self.running_jobs}
 
-        # More efficient approach: get total program count and subtract running jobs
-        # This avoids expensive per-generation database queries
+        # Persisted rows already exclude work still awaiting a database write.
         try:
             calculated_completed = await self._count_completed_generations_from_db()
 
