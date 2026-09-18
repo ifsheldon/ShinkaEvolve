@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
+from urllib.parse import urlsplit
 
 import httpx
+from pydantic import SecretStr
 
 if TYPE_CHECKING:
     from shinka.database import Program
@@ -31,7 +34,7 @@ _SHUTDOWN_DRAIN_TIMEOUT_S = 5.0
 async def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=_TIMEOUT)
+        _client = httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False)
     return _client
 
 
@@ -44,6 +47,19 @@ class EventNotifier:
 
     def __init__(self, callback_url: Optional[str], db_path: str) -> None:
         self.callback_url = callback_url.rstrip("/") if callback_url else None
+        token = os.environ.get("EVOMAESTRO_CALLBACK_TOKEN")
+        self._callback_token = SecretStr(token) if token else None
+        if self._callback_token is not None and self.callback_url:
+            target = urlsplit(self.callback_url)
+            if (
+                target.scheme not in {"http", "https"}
+                or target.hostname not in {"localhost", "127.0.0.1", "::1"}
+                or target.username is not None
+                or target.password is not None
+                or target.query
+                or target.fragment
+            ):
+                raise ValueError("Authenticated callbacks require a loopback URL")
         self.db_path = db_path
         self._pending_tasks: set[asyncio.Task[None]] = set()
         if self.callback_url:
@@ -139,7 +155,16 @@ class EventNotifier:
         url = f"{self.callback_url}/api/callback"
         try:
             client = await _get_client()
-            resp = await client.post(url, json=payload)
+            if self._callback_token is None:
+                resp = await client.post(url, json=payload)
+            else:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self._callback_token.get_secret_value()}"
+                    },
+                )
             if resp.status_code >= 400:
                 logger.error(
                     "Callback POST %s returned %d: %s",

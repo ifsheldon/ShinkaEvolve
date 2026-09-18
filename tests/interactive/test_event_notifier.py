@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field, asdict
+import secrets
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from shinka.core.event_notifier import EventNotifier
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -283,3 +283,57 @@ class TestUrlNormalization:
             await asyncio.sleep(0.05)
 
         assert log.requests[0]["url"] == "http://localhost:8000/api/callback"
+
+
+@pytest.mark.asyncio
+async def test_private_callback_credential_is_only_an_authorization_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public-demo callbacks authenticate without putting credentials in payloads or URLs."""
+    token = secrets.token_urlsafe(32)
+    monkeypatch.setenv("EVOMAESTRO_CALLBACK_TOKEN", token)
+    notifier = EventNotifier("http://127.0.0.1:8000", "run/programs.sqlite")
+    client = AsyncMock()
+    client.post.return_value.status_code = 200
+    with patch("shinka.core.event_notifier._get_client", return_value=client):
+        await notifier._post({"event": "program.generated"})
+    args, kwargs = client.post.call_args
+    assert args == ("http://127.0.0.1:8000/api/callback",)
+    assert kwargs["json"] == {"event": "program.generated"}
+    assert kwargs["headers"] == {"Authorization": f"Bearer {token}"}
+    assert token not in repr(notifier._callback_token)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://external.example",
+        "http://localhost.example",
+        "http://user:pass@localhost",
+    ],
+)
+def test_private_callback_credential_cannot_be_sent_to_remote_hosts(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """A private runner credential is only valid for the local callback service."""
+    monkeypatch.setenv("EVOMAESTRO_CALLBACK_TOKEN", secrets.token_urlsafe(32))
+    with pytest.raises(ValueError, match="loopback"):
+        EventNotifier(url, "run/programs.sqlite")
+
+
+@pytest.mark.asyncio
+async def test_callback_client_ignores_environment_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loopback bearer request cannot be forwarded through an environment proxy."""
+    from shinka.core import event_notifier
+
+    monkeypatch.setenv("HTTP_PROXY", "http://external.example:8080")
+    monkeypatch.setenv("ALL_PROXY", "http://external.example:8080")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setattr(event_notifier, "_client", None)
+    client = await event_notifier._get_client()
+    try:
+        assert client.trust_env is False
+    finally:
+        await client.aclose()
