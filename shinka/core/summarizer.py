@@ -1,6 +1,9 @@
 from typing import List, Optional, Tuple
 import logging
 import json
+import os
+import tempfile
+from dataclasses import fields
 import random
 import re
 from pathlib import Path
@@ -488,237 +491,131 @@ class MetaSummarizer:
             return 0
         return len([line for line in text.split("\n") if line.strip().startswith("•")])
 
-    def save_meta_state(self, filepath: str) -> None:
-        """Save the meta state to a file.
-
-        Only saves:
-        1. Current meta state (summary, scratchpad, recommendations)
-        2. Unprocessed programs that haven't been summarized yet
-        """
+    def save_meta_state(self, filepath: str | Path) -> None:
+        """Atomically checkpoint complete meta state, raising on write failure."""
+        state = {
+            "unprocessed_programs": [
+                program.to_dict() for program in self.evaluated_since_last_meta
+            ],
+            "meta_summary": self.meta_summary,
+            "meta_scratch_pad": self.meta_scratch_pad,
+            "meta_recommendations": self.meta_recommendations,
+            "meta_recommendations_history": self.meta_recommendations_history,
+            "total_programs_meta_processed": self.total_programs_processed,
+        }
+        # Serialize before creating a temporary file; never publish partial state.
+        serialized = json.dumps(state, indent=2, allow_nan=False)
+        destination = Path(filepath)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
         try:
-            # Only serialize unprocessed programs (those added since last meta update)
-            unprocessed_programs_data = []
-            failed_serializations = 0
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(serialized)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
-            for i, prog in enumerate(self.evaluated_since_last_meta):
-                try:
-                    prog_dict = prog.to_dict()
-                    unprocessed_programs_data.append(prog_dict)
-                except Exception as e:
-                    prog_id = prog.id if hasattr(prog, "id") else "unknown"
-                    logger.warning(f"Failed to serialize program {i} ({prog_id}): {e}")
-                    failed_serializations += 1
-
-            meta_data = {
-                "unprocessed_programs": unprocessed_programs_data,
-                "meta_summary": self.meta_summary,
-                "meta_scratch_pad": self.meta_scratch_pad,
-                "meta_recommendations": self.meta_recommendations,
-                "meta_recommendations_history": (self.meta_recommendations_history),
-                "total_programs_meta_processed": self.total_programs_processed,
-            }
-
-            # Ensure directory exists
-            filepath_obj = Path(filepath)
-            filepath_obj.parent.mkdir(parents=True, exist_ok=True)
-            # Write to temporary file first, then rename for atomic operation
-            temp_filepath = filepath_obj.with_suffix(".tmp")
-
-            with open(temp_filepath, "w", encoding="utf-8") as f:
-                json.dump(meta_data, f, indent=2, default=str)
-
-            # Atomic rename
-            temp_filepath.replace(filepath_obj)
-
-            saved_count = len(unprocessed_programs_data)
-
-            logger.info(
-                f"Saved meta state to {filepath}: "
-                f"{saved_count} unprocessed programs, "
-                f"summary: {'Yes' if self.meta_summary else 'No'}, "
-                f"scratchpad: {'Yes' if self.meta_scratch_pad else 'No'}, "
-                f"recommendations: {'Yes' if self.meta_recommendations else 'No'}, "
-                f"history: {len(self.meta_recommendations_history)} items"
-            )
-
-            # Debug logging for what's being saved
-            if self.meta_recommendations:
-                rec_preview = (
-                    self.meta_recommendations[:100] + "..."
-                    if len(self.meta_recommendations) > 100
-                    else self.meta_recommendations
-                )
-                logger.debug(f"Saving meta recommendations preview: {rec_preview}")
-                logger.debug(
-                    f"Saving meta recommendations length: "
-                    f"{len(self.meta_recommendations)}"
-                )
-            else:
-                logger.debug("No meta recommendations to save")
-
-            # Debug: Log program IDs being saved
-            if saved_count > 0:
-                program_ids = [
-                    prog.get("id", "no-id")[:8]
-                    for prog in unprocessed_programs_data[:3]
-                ]
-                logger.debug(f"Sample unprocessed program IDs: {program_ids}...")
-
-            if failed_serializations > 0:
-                logger.warning(
-                    f"Failed to serialize {failed_serializations} programs during save"
-                )
-        except Exception as e:
-            logger.error(f"Failed to save meta state to {filepath}: {e}")
-            import traceback
-
-            logger.debug(f"Full traceback: {traceback.format_exc()}")
-            # Clean up temp file if it exists
-            temp_filepath = Path(filepath).with_suffix(".tmp")
-            if temp_filepath.exists():
-                try:
-                    temp_filepath.unlink()
-                except Exception:
-                    pass
-
-    def load_meta_state(self, filepath: str) -> bool:
-        """Load the meta state from a file."""
-        filepath_obj = Path(filepath)
-        if not filepath_obj.exists():
-            logger.info(f"No meta state file found at {filepath}")
+    def load_meta_state(self, filepath: str | Path) -> bool:
+        """Restore a complete checkpoint, leaving current state intact on failure."""
+        path = Path(filepath)
+        if not path.exists():
             return False
-
         try:
-            # Check file size and readability
-            file_size = filepath_obj.stat().st_size
-            if file_size == 0:
-                logger.warning(f"Meta state file is empty: {filepath}")
-                return False
-
-            logger.info(f"Loading meta state from {filepath} (size: {file_size} bytes)")
-
-            with open(filepath, "r", encoding="utf-8") as f:
-                meta_data = json.load(f)
-
-            # Validate the loaded data structure
-            if not isinstance(meta_data, dict):
-                logger.error(
-                    f"Invalid meta state format: expected dict, got {type(meta_data)}"
+            state = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise ValueError("checkpoint must contain an object")
+            text_fields = ("meta_summary", "meta_scratch_pad", "meta_recommendations")
+            for field in text_fields:
+                value = state[field]
+                if value is not None and not isinstance(value, str):
+                    raise ValueError(f"{field} must be text or null")
+            history = state["meta_recommendations_history"]
+            if not isinstance(history, list) or any(
+                not isinstance(item, str) for item in history
+            ):
+                raise ValueError("recommendation history must contain strings")
+            processed = state["total_programs_meta_processed"]
+            if type(processed) is not int or processed < 0:
+                raise ValueError(
+                    "processed program count must be a nonnegative integer"
                 )
-                return False
-
-            # Support both old format (evaluated_programs) and new format
-            # (unprocessed_programs)
-            # for backward compatibility
-            prog_list = meta_data.get("unprocessed_programs", [])
-            if not prog_list and "evaluated_programs" in meta_data:
-                # Backward compatibility: load from old format but warn
-                prog_list = meta_data.get("evaluated_programs", [])
-                logger.warning(
-                    "Loading from old meta memory format with all evaluated programs"
-                )
-
-            prog_count = len(prog_list)
-            logger.info(f"Meta state contains {prog_count} unprocessed programs")
-
-            # Debug: Log the first program structure if available
-            if prog_count > 0:
-                logger.debug(
-                    f"First program keys: "
-                    f"{list(prog_list[0].keys()) if prog_list[0] else 'None'}"
-                )
-
-            # Restore evaluated programs with error handling
-            restored_programs = []
-            failed_programs = 0
-
-            for i, prog_dict in enumerate(prog_list):
-                try:
-                    if not prog_dict:
-                        logger.warning(f"Program {i} is None or empty")
-                        failed_programs += 1
-                        continue
-
-                    if not isinstance(prog_dict, dict):
-                        logger.warning(f"Program {i} is not a dict: {type(prog_dict)}")
-                        failed_programs += 1
-                        continue
-
-                    # Check if required fields exist
-                    required_fields = ["id", "code", "language", "generation"]
-                    missing_fields = [f for f in required_fields if f not in prog_dict]
-                    if missing_fields:
-                        logger.warning(
-                            f"Program {i} missing required fields: {missing_fields}"
-                        )
-                        failed_programs += 1
-                        continue
-
-                    program = Program.from_dict(prog_dict)
-                    restored_programs.append(program)
-                    logger.debug(f"Successfully restored program {i}: {program.id}")
-
-                except Exception as e:
-                    logger.warning(f"Failed to restore program {i}: {e}")
-                    logger.debug(f"Program {i} data: {prog_dict}")
-                    failed_programs += 1
-
-            self.evaluated_since_last_meta = restored_programs
-
-            if failed_programs > 0:
-                logger.warning(
-                    f"Failed to restore {failed_programs}/{prog_count} programs"
-                )
-
-            logger.info(
-                f"Successfully restored {len(restored_programs)} "
-                f"unprocessed programs to memory"
-            )
-
-            # Restore meta state
-            self.meta_summary = meta_data.get("meta_summary")
-            self.meta_scratch_pad = meta_data.get("meta_scratch_pad")
-            self.meta_recommendations = meta_data.get("meta_recommendations")
-            self.meta_recommendations_history = meta_data.get(
-                "meta_recommendations_history", []
-            )
-            self.total_programs_processed = meta_data.get(
-                "total_programs_meta_processed", 0
-            )
-
-            # Debug logging for meta recommendations
-            if self.meta_recommendations:
-                rec_preview = (
-                    self.meta_recommendations[:100] + "..."
-                    if len(self.meta_recommendations) > 100
-                    else self.meta_recommendations
-                )
-                logger.debug(f"Loaded meta recommendations preview: {rec_preview}")
-                logger.debug(
-                    f"Meta recommendations length: {len(self.meta_recommendations)}"
-                )
-            else:
-                logger.debug("No meta recommendations found in loaded data")
-
-            logger.info(
-                f"Successfully restored meta state: "
-                f"{len(self.evaluated_since_last_meta)} unprocessed programs, "
-                f"summary: {'Yes' if self.meta_summary else 'No'}, "
-                f"scratchpad: {'Yes' if self.meta_scratch_pad else 'No'}, "
-                f"recommendations: {'Yes' if self.meta_recommendations else 'No'}, "
-                f"history: {len(self.meta_recommendations_history)} items"
-            )
-            return True
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in meta state file {filepath}: {e}")
+            pending = state["unprocessed_programs"]
+            if not isinstance(pending, list):
+                raise ValueError("unprocessed programs must contain a list")
+            programs = []
+            program_ids = set()
+            for item in pending:
+                if not isinstance(item, dict):
+                    raise ValueError("unprocessed program must contain an object")
+                if set(item) != {field.name for field in fields(Program)}:
+                    raise ValueError(
+                        "pending program must contain the complete program schema"
+                    )
+                if any(
+                    not isinstance(item[field], str)
+                    for field in ("id", "code", "language")
+                ):
+                    raise ValueError(
+                        "program identity, code and language must be strings"
+                    )
+                if type(item["generation"]) is not int or item["generation"] < 0:
+                    raise ValueError("program generation must be a nonnegative integer")
+                for field in (
+                    "metadata",
+                    "public_metrics",
+                    "private_metrics",
+                    "review_priority_data",
+                ):
+                    if not isinstance(item[field], dict):
+                        raise ValueError(f"program {field} must be an object")
+                for field in ("combined_score", "complexity", "timestamp"):
+                    if item[field] is not None and type(item[field]) not in (
+                        int,
+                        float,
+                    ):
+                        raise ValueError(f"program {field} must be numeric or null")
+                for field in ("correct", "in_archive"):
+                    if type(item[field]) is not bool:
+                        raise ValueError(f"program {field} must be a boolean")
+                for field in ("archive_inspiration_ids", "top_k_inspiration_ids"):
+                    if not isinstance(item[field], list) or any(
+                        not isinstance(value, str) for value in item[field]
+                    ):
+                        raise ValueError(f"program {field} must contain strings")
+                if not item["id"] or item["id"] in program_ids:
+                    raise ValueError(
+                        "pending program identities must be nonempty and unique"
+                    )
+                program_ids.add(item["id"])
+                restored = Program(**item)
+                if restored.to_dict() != item:
+                    raise ValueError(
+                        "pending program contains noncanonical derived data"
+                    )
+                programs.append(restored)
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+            logger.error("Cannot restore meta checkpoint %s: %s", path, exc)
             return False
-        except Exception as e:
-            logger.error(f"Failed to load meta state from {filepath}: {e}")
-            import traceback
 
-            logger.debug(f"Full traceback: {traceback.format_exc()}")
-            return False
+        # Commit only after every field and pending program has been validated.
+        self.meta_summary = state["meta_summary"]
+        self.meta_scratch_pad = state["meta_scratch_pad"]
+        self.meta_recommendations = state["meta_recommendations"]
+        self.meta_recommendations_history = history
+        self.total_programs_processed = processed
+        self.evaluated_since_last_meta = programs
+        return True
 
     def write_meta_output(self, results_dir: str) -> None:
         """Write meta summary, scratchpad, and recommendations to a file."""

@@ -1201,7 +1201,7 @@ class ShinkaEvolveRunner:
                                 ),
                                 timeout=600.0,  # 10 minute timeout for final meta summary
                             )
-                            if success and final_meta_cost > 0:
+                            if final_meta_cost > 0:
                                 self.total_api_cost += final_meta_cost
                             if self.verbose:
                                 if success and final_meta_cost > 0:
@@ -1292,6 +1292,10 @@ class ShinkaEvolveRunner:
         # Check if we're resuming from an existing database
         resuming_run = await self.async_db.get_total_program_count_async() > 0
         self._is_resuming = resuming_run
+        if self.meta_summarizer:
+            self.meta_summarizer.configure_persistence(
+                Path(self.results_dir), resuming=resuming_run
+            )
 
         # Load bandit state if resuming
         if resuming_run:
@@ -1894,6 +1898,7 @@ class ShinkaEvolveRunner:
         # Add the initial program to meta memory tracking
         if self.meta_summarizer:
             self.meta_summarizer.add_evaluated_program(initial_program)
+            await self.meta_summarizer.checkpoint_async()
 
             # Check if we should update meta memory after adding this program
             if self.meta_summarizer.should_update_meta(
@@ -1909,23 +1914,19 @@ class ShinkaEvolveRunner:
                     updated_recs,
                     meta_cost,
                 ) = await self.meta_summarizer.update_meta_memory_async(best_program)
+                if meta_cost > 0:
+                    self.total_api_cost += meta_cost
+                    if initial_program.metadata is None:
+                        initial_program.metadata = {}
+                    initial_program.metadata["meta_cost"] = (
+                        initial_program.metadata.get("meta_cost", 0.0) + meta_cost
+                    )
+                    await self._persist_program_metadata_async(initial_program)
+                await self.meta_summarizer.checkpoint_async()
                 if updated_recs:
-                    # Write meta output file asynchronously
                     await self.meta_summarizer.write_meta_output_async(
                         str(self.results_dir)
                     )
-                    # Store meta cost for tracking
-                    if meta_cost > 0:
-                        logger.info(
-                            f"Meta recommendation generation cost: ${meta_cost:.4f}"
-                        )
-                        # Add meta cost to in-memory total for accurate budget tracking
-                        self.total_api_cost += meta_cost
-
-                        # Add meta cost to this program's metadata (the one that triggered the update)
-                        if initial_program.metadata is None:
-                            initial_program.metadata = {}
-                        initial_program.metadata["meta_cost"] = meta_cost
 
         # Set baseline score for LLM selection
         if self.llm_selection is not None:
@@ -4886,6 +4887,7 @@ class ShinkaEvolveRunner:
                         self._meta_side_effect_lock = meta_lock
                     async with meta_lock:
                         self.meta_summarizer.add_evaluated_program(program)
+                        await self.meta_summarizer.checkpoint_async()
 
                         if self.meta_summarizer.should_update_meta(
                             self.evo_config.meta_rec_interval
@@ -4899,23 +4901,19 @@ class ShinkaEvolveRunner:
                             ) = await self.meta_summarizer.update_meta_memory_async(
                                 best_program
                             )
+                            if meta_cost > 0:
+                                self.total_api_cost += meta_cost
+                                if program.metadata is None:
+                                    program.metadata = {}
+                                program.metadata["meta_cost"] = (
+                                    program.metadata.get("meta_cost", 0.0) + meta_cost
+                                )
+                                metadata_persist_needed = True
+                            await self.meta_summarizer.checkpoint_async()
                             if updated_recs:
-                                # Write meta output file asynchronously
                                 await self.meta_summarizer.write_meta_output_async(
                                     str(self.results_dir)
                                 )
-                                if meta_cost > 0:
-                                    logger.info(
-                                        f"Meta recommendation cost: ${meta_cost:.4f}"
-                                    )
-                                    # Add meta cost to in-memory total for accurate budget tracking
-                                    self.total_api_cost += meta_cost
-
-                                    # Add meta cost to this program's metadata
-                                    if program.metadata is None:
-                                        program.metadata = {}
-                                    program.metadata["meta_cost"] = meta_cost
-                                    metadata_persist_needed = True
                 except Exception as e:
                     logger.warning(f"Meta summarizer error for {job.job_id}: {e}")
                     # Don't fail the whole job for meta summarizer issues
@@ -5966,6 +5964,13 @@ class ShinkaEvolveRunner:
                 await asyncio.gather(
                     *self.active_proposal_tasks.values(), return_exceptions=True
                 )
+
+            if self.meta_summarizer:
+                try:
+                    async with self._meta_side_effect_lock:
+                        await self.meta_summarizer.checkpoint_async()
+                except Exception:
+                    logger.exception("Failed to save meta checkpoint during cleanup")
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:

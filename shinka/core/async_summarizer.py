@@ -39,6 +39,44 @@ class AsyncMetaSummarizer:
         """
         self.sync_summarizer = sync_summarizer
         self.async_llm_client = async_llm_client
+        self._checkpoint_path: Path | None = None
+        self._checkpoint_lock = asyncio.Lock()
+
+    def configure_persistence(self, results_dir: Path, *, resuming: bool) -> None:
+        """Restore explicit state before enabling checkpoints for this run.
+
+        Historical text summaries are display artifacts, not checkpoints.
+        A malformed checkpoint stops setup instead of silently discarding state.
+        """
+        path = results_dir / "meta" / "state.json"
+        if path.exists():
+            if not resuming:
+                raise ValueError(f"Meta checkpoint exists for an empty run: {path}")
+            if not self.sync_summarizer.load_meta_state(path):
+                raise ValueError(f"Cannot resume from invalid meta checkpoint: {path}")
+        elif resuming:
+            logger.info("No meta checkpoint found; starting with empty meta state")
+        self._checkpoint_path = path
+
+    async def checkpoint_async(self) -> None:
+        """Save state without overlapping or abandoning a background file write.
+
+        Callers hold the runner's meta lock while mutating and checkpointing state.
+        On cancellation, finish the atomic write before releasing that lock.
+        """
+        if self._checkpoint_path is None:
+            return
+        async with self._checkpoint_lock:
+            write_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.sync_summarizer.save_meta_state, self._checkpoint_path
+                )
+            )
+            try:
+                await asyncio.shield(write_task)
+            except asyncio.CancelledError:
+                await write_task
+                raise
 
     async def update_meta_memory_async(
         self, best_program: Optional[Program] = None
@@ -185,33 +223,33 @@ class AsyncMetaSummarizer:
             logger.error("Step 1: Failed to get responses from async meta LLM client")
             return None, 0.0
 
-        # Filter out None responses and combine summaries
-        valid_responses = [r for r in responses if r is not None]
-        if not valid_responses:
-            logger.error("Step 1: All batch responses were None")
-            return None, 0.0
-
-        # Combine all individual summaries
-        combined_summaries = []
-        total_cost = 0.0
-        for i, response in enumerate(valid_responses):
-            if response and response.content:
+        # Keep each response aligned with its candidate, including failed calls.
+        summaries_with_gen = []
+        total_cost = sum(
+            response.cost or 0.0 for response in responses if response is not None
+        )
+        for generation, patch_name, correct, response in zip(
+            generation_ids, patch_names, correct_programs, responses
+        ):
+            if (
+                response is not None
+                and isinstance(response.content, str)
+                and response.content.strip()
+            ):
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
-                program_summary += f"Generation {generation_ids[i]} - Patch Name {patch_names[i]} - Correct Program: {correct_programs[i]}"
-                combined_summaries.append(program_summary)
-                total_cost += response.cost or 0.0
+                program_summary += f"Generation {generation} - Patch Name {patch_name} - Correct Program: {correct}"
+                summaries_with_gen.append((generation, program_summary))
             else:
-                logger.warning(f"Step 1: Empty response for program {i}")
+                logger.warning("Step 1: Empty response for generation %s", generation)
 
-        # Sort combined_summaries by generation (using generation_ids)
-        # Zip together summaries and their generation, sort, then extract summaries
-        summaries_with_gen = list(zip(generation_ids, combined_summaries))
-        summaries_with_gen.sort(key=lambda x: x[0])
+        summaries_with_gen.sort(key=lambda item: item[0])
         combined_summaries = [summary for _, summary in summaries_with_gen]
 
-        if not combined_summaries:
-            logger.error("Step 1: No valid summaries generated")
+        if len(responses) != num_programs or len(combined_summaries) != num_programs:
+            logger.error(
+                "Step 1: Incomplete summary batch; retaining all pending programs"
+            )
             return None, total_cost
 
         # Join all summaries with double newlines
@@ -257,7 +295,10 @@ class AsyncMetaSummarizer:
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 2 - Global insights generated (cost: ${cost:.4f})")
-        return response.content.strip(), cost
+        content = (
+            response.content.strip() if isinstance(response.content, str) else None
+        )
+        return content, cost
 
     async def _step3_generate_recommendations_async(
         self, global_insights: str, best_program: Optional[Program] = None
@@ -298,7 +339,10 @@ class AsyncMetaSummarizer:
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 3 - Recommendations generated (cost: ${cost:.4f})")
-        return response.content.strip(), cost
+        content = (
+            response.content.strip() if isinstance(response.content, str) else None
+        )
+        return content, cost
 
     async def perform_final_summary_async(
         self,
@@ -326,53 +370,42 @@ class AsyncMetaSummarizer:
         )
 
         updated_recs, meta_cost = await self.update_meta_memory_async(best_program)
-        if updated_recs:
-            await self.write_meta_output_async(results_dir)
-            logger.info(f"Final meta summary completed (cost: ${meta_cost:.4f})")
 
-            # Store the final meta cost in the best program's metadata
-            if meta_cost > 0 and best_program and db_config:
-                try:
-                    import json
+        # Account for reported calls even when a later analysis step failed.
+        if meta_cost > 0 and best_program and db_config:
+            try:
+                import json
 
-                    def update_metadata():
-                        from shinka.database import ProgramDatabase
+                def update_metadata():
+                    from shinka.database import ProgramDatabase
 
-                        thread_db = ProgramDatabase(db_config)
-                        try:
-                            if best_program.metadata is None:
-                                best_program.metadata = {}
+                    thread_db = ProgramDatabase(db_config)
+                    try:
+                        if best_program.metadata is None:
+                            best_program.metadata = {}
+                        best_program.metadata["meta_cost"] = (
+                            best_program.metadata.get("meta_cost", 0.0) + meta_cost
+                        )
+                        thread_db.cursor.execute(
+                            "UPDATE programs SET metadata = ? WHERE id = ?",
+                            (json.dumps(best_program.metadata), best_program.id),
+                        )
+                        thread_db.conn.commit()
+                    finally:
+                        thread_db.close()
 
-                            # Accumulate meta_cost if it already exists
-                            existing_meta_cost = best_program.metadata.get(
-                                "meta_cost", 0.0
-                            )
-                            best_program.metadata["meta_cost"] = (
-                                existing_meta_cost + meta_cost
-                            )
+                await asyncio.to_thread(update_metadata)
+            except Exception:
+                logger.exception("Failed to store final meta cost in database")
 
-                            metadata_json = json.dumps(best_program.metadata)
-                            thread_db.cursor.execute(
-                                ("UPDATE programs SET metadata = ? WHERE id = ?"),
-                                (metadata_json, best_program.id),
-                            )
-                            thread_db.conn.commit()
-                        finally:
-                            thread_db.close()
-
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, update_metadata)
-                    logger.info(
-                        f"Stored final meta cost ${meta_cost:.4f} "
-                        f"in best program metadata"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to store final meta cost in database: {e}")
-
-            return True, meta_cost
-        else:
-            logger.warning("Final meta summary failed to generate recommendations")
-            return False, 0.0
+        try:
+            await self.checkpoint_async()
+            if updated_recs:
+                await self.write_meta_output_async(results_dir)
+        except Exception:
+            logger.exception("Failed to write final meta checkpoint or summary")
+            return False, meta_cost
+        return bool(updated_recs), meta_cost
 
     async def write_meta_output_async(self, results_dir: str) -> None:
         """Async version of write_meta_output - write files in thread pool."""
@@ -439,11 +472,11 @@ class AsyncMetaSummarizer:
         """Sample a single recommendation from the current recommendations."""
         return self.sync_summarizer.get_sampled_recommendation()
 
-    def save_meta_state(self, filepath: str) -> None:
+    def save_meta_state(self, filepath: str | Path) -> None:
         """Save the meta state to a file (delegated to sync)."""
         return self.sync_summarizer.save_meta_state(filepath)
 
-    def load_meta_state(self, filepath: str) -> bool:
+    def load_meta_state(self, filepath: str | Path) -> bool:
         """Load the meta state from a file (delegated to sync)."""
         return self.sync_summarizer.load_meta_state(filepath)
 

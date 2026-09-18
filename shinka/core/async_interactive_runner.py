@@ -337,27 +337,29 @@ class ShinkaEvolveInteractiveRunner(ShinkaEvolveRunner):
 
         # Final meta summary
         if self.meta_summarizer:
-            try:
-                best_program = await asyncio.wait_for(
-                    self.async_db.get_best_program_async(), timeout=30.0
-                )
-                if best_program:
-                    success, final_meta_cost = await asyncio.wait_for(
-                        self.meta_summarizer.perform_final_summary_async(
-                            str(self.results_dir),
-                            best_program,
-                            self.db.config,
-                        ),
-                        timeout=600.0,
+            async with self._meta_side_effect_lock:
+                try:
+                    best_program = await asyncio.wait_for(
+                        self.async_db.get_best_program_async(), timeout=30.0
                     )
-                    if self.verbose and success and final_meta_cost > 0:
-                        logger.info(
-                            f"Final meta summary completed (cost: ${final_meta_cost:.4f})"
+                    if best_program:
+                        success, final_meta_cost = await asyncio.wait_for(
+                            self.meta_summarizer.perform_final_summary_async(
+                                str(self.results_dir),
+                                best_program,
+                                self.db.config,
+                            ),
+                            timeout=600.0,
                         )
-            except asyncio.TimeoutError:
-                logger.warning("Final meta summary timed out")
-            except Exception as e:
-                logger.error(f"Error in final meta summary: {e}")
+                        self.total_api_cost += final_meta_cost
+                        if self.verbose and success and final_meta_cost > 0:
+                            logger.info(
+                                f"Final meta summary completed (cost: ${final_meta_cost:.4f})"
+                            )
+                except asyncio.TimeoutError:
+                    logger.warning("Final meta summary timed out")
+                except Exception as e:
+                    logger.error(f"Error in final meta summary: {e}")
 
         await asyncio.sleep(0.5)
         self._save_bandit_state()

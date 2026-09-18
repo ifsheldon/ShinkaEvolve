@@ -83,6 +83,7 @@ def runner(tmp_path):
         r.scheduler = AsyncMock()
         r.embedding_client = None
         r.meta_summarizer = None
+        r._meta_side_effect_lock = asyncio.Lock()
         r.llm_selection = None
         r.novelty_judge = None
         r.prompt_sampler = MagicMock()
@@ -821,6 +822,25 @@ class TestRunFinalOperations:
         await runner._run_final_operations()
 
         runner.meta_summarizer.perform_final_summary_async.assert_awaited_once()
+        assert runner.total_api_cost == pytest.approx(0.05)
+
+    @pytest.mark.asyncio
+    async def test_final_summary_waits_for_active_meta_side_effect(self, runner):
+        """Final summary cannot mutate meta state while another update owns it."""
+        runner.meta_summarizer = MagicMock()
+        runner.meta_summarizer.perform_final_summary_async = AsyncMock(
+            return_value=(False, 0.07)
+        )
+        runner.async_db.get_best_program_async.return_value = _make_program(pid="best")
+        await runner._meta_side_effect_lock.acquire()
+        task = asyncio.create_task(runner._run_final_operations())
+        await asyncio.sleep(0)
+        runner.meta_summarizer.perform_final_summary_async.assert_not_awaited()
+        assert not task.done()
+        runner._meta_side_effect_lock.release()
+        await task
+        runner.meta_summarizer.perform_final_summary_async.assert_awaited_once()
+        assert runner.total_api_cost == pytest.approx(0.07)
 
 
 # ========================================================================== #
